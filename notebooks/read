@@ -1,0 +1,19 @@
+数据分析、实验、画图
+<class 'dict'>
+
+dict_keys([
+    'main_category',
+    'title',  #  商品名称  以后会直接进入 RAG 知识库
+    'average_rating',  #  Amazon商品的平均评分  和用户的rating区分
+    'rating_number',  #  商品累计获得了多少评分
+    'features',  #  商品特点
+    'description',  #  商品描述
+    'price',  #  商品价格
+    'images',  # 商品图片
+    'videos',  # 商品视频
+    'store',  # 商品相关信息
+    'categories',  # 商品所属类别
+    'details',  # 更详细的商品属性
+    'parent_asin',  #  商品关联id  把 Review 和 Metadata 连接起来
+    'bought_together'  # Amazon提供的关联购买信息
+])

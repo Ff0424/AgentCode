@@ -1,0 +1,23 @@
+# Python virtual environment
+AgentRec/
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Large/raw datasets
+data/raw/*.jsonl.gz
+
+# Temporary files
+*.log
+.DS_Store
+Thumbs.db

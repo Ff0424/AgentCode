@@ -1,0 +1,6 @@
+pandas-3.0.5  #处理数据
+numpy-2.5.2  #数值计算
+matplotlib-3.11.1  #数据可视化
+scikit-learn-1.9.0  #数据处理、评价指标以及后续机器学习
+jupyter-1.1.1  #做Amazon数据探索（EDA
+tqdm-4.70.0  #显示数据处理进度条
