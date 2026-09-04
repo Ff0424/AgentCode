@@ -8,11 +8,11 @@
 4. 输出 JSONL 文件，为后续 Embedding / Vector Store 做准备
 
 输入：
-data/processed/parent_asins_10core.json
+data/processed/recommendation/parent_asins_10core.json
 data/raw/meta_Electronics.jsonl.gz
 
 输出：
-data/processed/product_documents.jsonl
+data/processed/rag/product_documents.jsonl
 
 每行格式：
 {
@@ -45,6 +45,7 @@ TEN_CORE_ASIN_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "recommendation"
     / "parent_asins_10core.json"
 )
 
@@ -52,6 +53,7 @@ OUTPUT_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "rag"
     / "product_documents.jsonl"
 )
 
@@ -360,6 +362,11 @@ def build_document(product):
 # ============================================================
 
 def build_product_documents():
+
+    OUTPUT_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     # --------------------------------------------------------
     # 加载 10-Core 商品集合

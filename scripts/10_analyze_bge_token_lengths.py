@@ -8,7 +8,7 @@
 4. 为 Product Document V2 的长度控制策略提供依据
 
 输入：
-data/processed/product_documents.jsonl
+data/processed/rag/product_documents.jsonl
 
 模型：
 BAAI/bge-m3
@@ -34,6 +34,7 @@ DOCUMENT_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "rag"
     / "product_documents.jsonl"
 )
 

@@ -8,7 +8,7 @@
 4. 为后续 Product Document 构建提供依据
 
 输入：
-data/processed/parent_asins_10core.json
+data/processed/recommendation/parent_asins_10core.json
 data/raw/meta_Electronics.jsonl.gz
 
 说明：
@@ -37,6 +37,7 @@ TEN_CORE_ASIN_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "recommendation"
     / "parent_asins_10core.json"
 )
 

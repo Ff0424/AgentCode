@@ -7,7 +7,7 @@
 3. 为后续 Product Document 的 details 字段筛选提供依据
 
 输入：
-data/processed/parent_asins_10core.json
+data/processed/recommendation/parent_asins_10core.json
 data/raw/meta_Electronics.jsonl.gz
 
 当前只做统计分析，不修改原始数据。
@@ -36,6 +36,7 @@ TEN_CORE_ASIN_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "recommendation"
     / "parent_asins_10core.json"
 )
 

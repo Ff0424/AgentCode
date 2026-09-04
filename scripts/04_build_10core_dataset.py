@@ -11,12 +11,12 @@
 6. 为后续 Metadata 匹配做准备
 
 输入：
-data/processed/
+data/processed/recommendation/
 ├── interactions.npz
 └── item_mapping.json
 
 输出：
-data/processed/
+data/processed/recommendation/
 ├── interactions_10core.npz
 ├── users_10core.npy
 ├── items_10core.npy
@@ -35,25 +35,27 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+RECOMMENDATION_DIR = (
+    PROJECT_ROOT / "data" / "processed" / "recommendation"
+)
 
-INTERACTION_PATH = PROCESSED_DIR / "interactions.npz"
-ITEM_MAPPING_PATH = PROCESSED_DIR / "item_mapping.json"
+INTERACTION_PATH = RECOMMENDATION_DIR / "interactions.npz"
+ITEM_MAPPING_PATH = RECOMMENDATION_DIR / "item_mapping.json"
 
 OUTPUT_INTERACTION_PATH = (
-    PROCESSED_DIR / "interactions_10core.npz"
+    RECOMMENDATION_DIR / "interactions_10core.npz"
 )
 
 OUTPUT_USER_PATH = (
-    PROCESSED_DIR / "users_10core.npy"
+    RECOMMENDATION_DIR / "users_10core.npy"
 )
 
 OUTPUT_ITEM_PATH = (
-    PROCESSED_DIR / "items_10core.npy"
+    RECOMMENDATION_DIR / "items_10core.npy"
 )
 
 OUTPUT_PARENT_ASIN_PATH = (
-    PROCESSED_DIR / "parent_asins_10core.json"
+    RECOMMENDATION_DIR / "parent_asins_10core.json"
 )
 
 
@@ -154,6 +156,11 @@ def run_kcore(user_ids, item_ids, num_users, num_items, k):
 # ============================================================
 
 def build_10core_dataset():
+
+    RECOMMENDATION_DIR.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     print("Loading interactions...")
 

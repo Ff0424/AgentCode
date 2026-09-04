@@ -12,11 +12,11 @@
    1 Product = 1 Document
 
 输入：
-data/processed/parent_asins_10core.json
+data/processed/recommendation/parent_asins_10core.json
 data/raw/meta_Electronics.jsonl.gz
 
 输出：
-data/processed/product_documents_v2.jsonl
+data/processed/rag/product_documents_v2.jsonl
 """
 
 import gzip
@@ -44,6 +44,7 @@ TEN_CORE_ASIN_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "recommendation"
     / "parent_asins_10core.json"
 )
 
@@ -51,6 +52,7 @@ OUTPUT_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "rag"
     / "product_documents_v2.jsonl"
 )
 
@@ -567,6 +569,11 @@ def build_document(
 # ============================================================
 
 def build_product_documents():
+
+    OUTPUT_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True
+    )
 
     # --------------------------------------------------------
     # 加载 BGE-M3 Tokenizer

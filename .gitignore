@@ -4,6 +4,11 @@
 __pycache__/
 *.py[cod]
 *.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # ============================================================
 # Virtual environments
@@ -13,21 +18,54 @@ AgentRec/
 venv/
 
 # ============================================================
+# Local environment variables and secrets
+# ============================================================
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+
+# ============================================================
 # IDE
 # ============================================================
 .vscode/
 .idea/
 
 # ============================================================
-# Raw / processed datasets
+# Local datasets and generated artifacts
 # ============================================================
 data/raw/
 data/processed/
+data/processed copy*/
+data/rag/
+data/recommendation/
+artifacts/
+outputs/
 
 # ============================================================
 # Logs
 # ============================================================
 *.log
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
-# Jupyter Notebook checkpoints
+# ============================================================
+# Jupyter
+# ============================================================
 .ipynb_checkpoints/
+
+# ============================================================
+# Local model weights
+# ============================================================
+models/
+
+# ============================================================
+# Operating-system files
+# ============================================================
+.DS_Store
+Thumbs.db
+
+# Early local EDA notebook
+notebooks/01_explore_amazon.ipynb

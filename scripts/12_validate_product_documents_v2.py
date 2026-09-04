@@ -8,7 +8,7 @@
 4. 确认所有文档都满足 <= 2048 tokens
 
 输入：
-data/processed/product_documents_v2.jsonl
+data/processed/rag/product_documents_v2.jsonl
 """
 
 import json
@@ -28,6 +28,7 @@ DOCUMENT_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "rag"
     / "product_documents_v2.jsonl"
 )
 

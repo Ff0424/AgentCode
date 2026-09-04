@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="AgentRec AI shopping decision assistant demo">
+  <title>AgentRec · AI Shopping Decision Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="site-header">
+      <div class="brand-mark" aria-hidden="true">AR</div>
+      <div>
+        <p class="eyebrow">AgentRec</p>
+        <h1>AI Shopping Decision Assistant</h1>
+        <p class="subtitle">
+          Semantic retrieval, recommendation, RAG and LLM-powered shopping assistance.
+        </p>
+      </div>
+    </header>
+
+    <main class="chat-card" aria-label="AgentRec conversation">
+      <section
+        id="messages"
+        class="messages"
+        aria-live="polite"
+        aria-busy="false"
+      >
+        <article class="message message-agent">
+          <div class="message-label">AgentRec</div>
+          <div class="message-bubble">
+            Hi! I’m AgentRec. Tell me what kind of electronics you’re looking for,
+            including preferences such as price, use case, or desired features.
+          </div>
+        </article>
+      </section>
+
+      <section class="composer-section" aria-label="Write a message">
+        <div class="examples" aria-label="Example prompts">
+          <span class="examples-label">Try an example</span>
+          <button class="prompt-chip" type="button">
+            Recommend a USB-C hub under $50 with HDMI and ethernet.
+          </button>
+          <button class="prompt-chip" type="button">
+            I need a portable Bluetooth speaker for camping.
+          </button>
+          <button class="prompt-chip" type="button">
+            Find a dash camera with GPS and night vision.
+          </button>
+        </div>
+
+        <form id="chat-form" class="composer">
+          <label class="sr-only" for="message-input">Shopping request</label>
+          <textarea
+            id="message-input"
+            name="message"
+            rows="2"
+            maxlength="4000"
+            placeholder="Describe the electronics you’re looking for…"
+            autocomplete="off"
+          ></textarea>
+          <button id="send-button" class="send-button" type="submit">
+            <span>Send</span>
+            <span aria-hidden="true">→</span>
+          </button>
+        </form>
+        <div class="composer-meta">
+          <span id="input-status" role="status">Enter to send · Shift + Enter for a new line</span>
+          <span id="character-count">0 / 4000</span>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      Catalog-grounded answers for demonstration purposes.
+    </footer>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

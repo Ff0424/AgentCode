@@ -8,7 +8,7 @@
 4. 为后续是否需要 Chunking、选择 Embedding Model 提供依据
 
 输入：
-data/processed/product_documents.jsonl
+data/processed/rag/product_documents.jsonl
 
 当前只做分析，不修改 Product Documents。
 """
@@ -29,6 +29,7 @@ DOCUMENT_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "rag"
     / "product_documents.jsonl"
 )
 

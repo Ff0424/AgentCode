@@ -1,7 +1,16 @@
-pandas==3.0.5  #处理数据
-numpy==2.5.2  #数值计算
-matplotlib==3.11.1  #数据可视化
-scikit-learn==1.9.0  #数据处理、评价指标以及后续机器学习
-jupyter==1.1.1  #做Amazon数据探索（EDA
-tqdm==4.70.0  #显示数据处理进度条
-transformers
+# Core numerical and text-processing dependencies
+numpy==2.5.2
+transformers==5.16.1
+FlagEmbedding==1.4.2
+
+# FAISS index build and runtime search
+faiss-cpu==1.15.0
+
+# FastAPI backend and DeepSeek OpenAI-compatible client
+fastapi==0.141.1
+uvicorn==0.52.4
+pydantic==2.13.5
+openai==3.7.0
+
+# PyTorch must be installed separately before this file.
+# Validated server runtime: torch 2.12.1+cu132.

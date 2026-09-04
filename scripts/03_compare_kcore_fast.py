@@ -1,6 +1,9 @@
 """
 High-performance K-Core filtering using NumPy.
 3/5/10-Core 对比实验
+
+输入：
+data/processed/recommendation/interactions.npz
 """
 
 from pathlib import Path
@@ -14,6 +17,7 @@ DATA_PATH = (
     PROJECT_ROOT
     / "data"
     / "processed"
+    / "recommendation"
     / "interactions.npz"
 )
 
