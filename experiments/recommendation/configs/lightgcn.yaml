@@ -1,0 +1,22 @@
+# AgentRec V2 standard LightGCN collaborative baseline.
+# PyTorch is installed separately; the validated server uses CUDA on cuda:0.
+
+embedding_dim: 64
+num_layers: 3
+learning_rate: 0.001
+batch_size: 262144
+epochs: 30
+reg_weight: 0.0001
+seed: 42
+topk: [10, 20, 50]
+eval_user_batch_size: 512
+early_stopping_patience: 5
+
+device: cuda:0
+early_stopping_metric: NDCG@20
+dataset_path: data/processed/recommendation/experiments
+item_mapping_path: data/processed/recommendation/item_mapping.json
+parent_asins_path: data/processed/recommendation/parent_asins_10core.json
+checkpoint_path: artifacts/recommendation/lightgcn_best.pt
+report_path: reports/recommendation/lightgcn_baseline.md
+popularity_report_path: reports/recommendation/popularity_baseline.md

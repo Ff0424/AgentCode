@@ -1,0 +1,9 @@
+# AgentRec V2 shared recommendation experiment configuration.
+# Paths are resolved from the project root by future experiment runners.
+
+dataset_path: data/processed/recommendation/experiments
+topk:
+  - 10
+  - 20
+  - 50
+seed: 42

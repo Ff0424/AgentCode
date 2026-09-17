@@ -1,0 +1,23 @@
+# AgentRec V2 pure-text BGE-M3 semantic recommendation baseline.
+# Item embedding generation and full evaluation run on the Ubuntu GPU server.
+
+model_name_or_path: models/bge-m3
+dataset_path: data/processed/recommendation/experiments
+product_catalog_path: data/processed/recommendation/product_catalog.jsonl
+item_mapping_path: data/processed/recommendation/item_mapping.json
+parent_asins_path: data/processed/recommendation/parent_asins_10core.json
+item_embedding_path: artifacts/recommendation/semantic/item_embeddings.npy
+item_embedding_metadata_path: artifacts/recommendation/semantic/item_embedding_metadata.json
+report_path: reports/recommendation/semantic_baseline.md
+popularity_report_path: reports/recommendation/popularity_baseline.md
+lightgcn_report_path: reports/recommendation/lightgcn_baseline.md
+
+text_fields: [title, categories, features, description]
+normalize_embeddings: true
+embedding_batch_size: 8
+eval_user_batch_size: 256
+max_length: 2048
+embedding_dim: 1024
+topk: [10, 20, 50]
+device: cuda:0
+use_fp16: true
