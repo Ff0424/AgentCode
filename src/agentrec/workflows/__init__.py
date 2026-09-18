@@ -4,6 +4,7 @@ from .routes import WorkflowAction, WorkflowRoute
 from .shopping import (
     build_shopping_workflow,
     candidate_selector_node,
+    retrieve_evidence_node,
     requirement_planner_node,
 )
 from .state import ShoppingWorkflowState
@@ -14,5 +15,6 @@ __all__ = [
     "WorkflowRoute",
     "build_shopping_workflow",
     "candidate_selector_node",
+    "retrieve_evidence_node",
     "requirement_planner_node",
 ]

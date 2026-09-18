@@ -12,6 +12,7 @@ from src.agentrec.workflows import (
     WorkflowRoute,
     build_shopping_workflow,
 )
+from tests.fake_evidence import FakeEvidenceService
 
 
 class FakeRecommendationTool:
@@ -30,12 +31,14 @@ class FakeRecommendationTool:
                 items=(),
             )
         price = self.prices[args.category]
+        item_index = {"Dock": 10, "Mouse": 20, "Headphones": 30}[args.category]
         return RecommendationToolResult(
             personalization_status="personalized",
             fallback_reason=None,
             returned_count=1,
             items=(RecommendationToolItem(
                 rank=1,
+                item_index=item_index,
                 parent_asin=f"P-{args.category.upper()}",
                 title=f"Test {args.category}",
                 price=price,
@@ -74,7 +77,9 @@ def initial_state() -> ShoppingWorkflowState:
 
 def run(prices: dict[str, float], *, empty_category: str | None = None):
     tool = FakeRecommendationTool(prices, empty_category=empty_category)
-    graph = build_shopping_workflow(tool, ShoppingPlanService())
+    graph = build_shopping_workflow(
+        tool, ShoppingPlanService(), evidence_service=FakeEvidenceService()
+    )
     output = graph.invoke(initial_state(), config={"recursion_limit": 50})
     return ShoppingWorkflowState.model_validate(output), tool
 
@@ -82,7 +87,9 @@ def run(prices: dict[str, float], *, empty_category: str | None = None):
 class ShoppingWorkflowTests(unittest.TestCase):
     def test_graph_compiles_and_dependencies_are_not_state_fields(self) -> None:
         tool = FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180})
-        graph = build_shopping_workflow(tool, ShoppingPlanService())
+        graph = build_shopping_workflow(
+            tool, ShoppingPlanService(), evidence_service=FakeEvidenceService()
+        )
         self.assertTrue(callable(graph.invoke))
         fields = set(ShoppingWorkflowState.model_fields)
         self.assertTrue({"agent_state", "last_tool_result", "evaluation"} <= fields)

@@ -17,6 +17,7 @@ from src.agentrec.planning import (
 from src.agentrec.services import ShoppingPlanService
 from src.agentrec.workflows import ShoppingWorkflowState, WorkflowRoute, build_shopping_workflow
 from tests.test_shopping_workflow import FakeRecommendationTool, initial_state
+from tests.fake_evidence import FakeEvidenceService
 
 
 class FakeTextProvider:
@@ -147,6 +148,7 @@ class LLMPlannerAdapterTests(unittest.TestCase):
             FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180}),
             ShoppingPlanService(),
             planner=planner,
+            evidence_service=FakeEvidenceService(),
         )
         final = ShoppingWorkflowState.model_validate(
             graph.invoke(initial_state(), config={"recursion_limit": 50})
@@ -165,6 +167,7 @@ class LLMPlannerAdapterTests(unittest.TestCase):
         graph = build_shopping_workflow(
             FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180}),
             ShoppingPlanService(), planner=StructuredLLMPlanner(provider),
+            evidence_service=FakeEvidenceService(),
         )
         final = ShoppingWorkflowState.model_validate(graph.invoke(initial_state()))
         self.assertEqual(final.route, WorkflowRoute.ERROR)
@@ -180,6 +183,7 @@ class LLMPlannerAdapterTests(unittest.TestCase):
         graph = build_shopping_workflow(
             FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180}),
             ShoppingPlanService(), planner=StructuredLLMPlanner(provider),
+            evidence_service=FakeEvidenceService(),
         )
         final = ShoppingWorkflowState.model_validate(graph.invoke(initial_state()))
         self.assertEqual(final.route, WorkflowRoute.ERROR)

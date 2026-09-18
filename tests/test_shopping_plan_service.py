@@ -31,6 +31,7 @@ def result(asin: str, title: str, price: float | None, source: str = "hybrid"):
         returned_count=1,
         items=(RecommendationToolItem(
             rank=1,
+            item_index=1,
             parent_asin=asin,
             title=title,
             price=price,

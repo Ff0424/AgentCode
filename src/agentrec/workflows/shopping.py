@@ -15,6 +15,11 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import ValidationError
 
 from ..domain import AgentState, PlanStatus, RequirementStatus, ShoppingRequirement
+from ..evidence import (
+    EvidenceCandidate,
+    RequirementEvidence,
+    SelectedProductEvidence,
+)
 from ..planning import (
     SelectCandidateDecision,
     SelectRequirementDecision,
@@ -105,6 +110,7 @@ def select_requirement_node(
         "selected_parent_asin": None,
         "evaluation": None,
         "planner_decision": None,
+        "current_evidence": None,
         "route": route,
     }
 
@@ -180,6 +186,7 @@ def requirement_planner_node(
         "selected_parent_asin": None,
         "evaluation": None,
         "planner_decision": decision,
+        "current_evidence": None,
         "route": WorkflowRoute.CONTINUE,
     }
 
@@ -217,7 +224,7 @@ def recommend_node(
         pending_action=(
             WorkflowAction.CONFLICT.value
             if route == WorkflowRoute.CONFLICT
-            else WorkflowAction.SELECT_CANDIDATE.value
+            else WorkflowAction.RETRIEVE_EVIDENCE.value
         ),
         error_state=(
             "no_recommendation_candidates"
@@ -231,7 +238,87 @@ def recommend_node(
         "last_tool_result": result,
         "selected_parent_asin": None,
         "evaluation": None,
+        "current_evidence": None,
         "route": route,
+    }
+
+
+def _evidence_candidates(result: Any) -> tuple[EvidenceCandidate, ...]:
+    if result is None or result.returned_count == 0:
+        raise ValueError("Evidence retrieval requires recommendation candidates.")
+    return tuple(
+        EvidenceCandidate(item_index=item.item_index, parent_asin=item.parent_asin)
+        for item in result.items
+    )
+
+
+def _validate_current_evidence(
+    state: ShoppingWorkflowState,
+) -> RequirementEvidence:
+    evidence = state.current_evidence
+    requirement = _current_requirement(state)
+    plan = state.agent_state.shopping_plan
+    if evidence is None:
+        raise ValueError("Current requirement evidence is missing.")
+    if (
+        evidence.plan_id != plan.plan_id
+        or evidence.retrieved_at_plan_version != plan.version
+        or evidence.requirement_id != requirement.requirement_id
+    ):
+        raise ValueError("Current requirement evidence is stale.")
+    if evidence.candidates != _evidence_candidates(state.last_tool_result):
+        raise ValueError("Evidence candidate identities differ from the Tool Result.")
+    return evidence
+
+
+def retrieve_evidence_node(
+    value: ShoppingWorkflowState | dict[str, Any],
+    *,
+    evidence_service: Any,
+) -> dict[str, Any]:
+    """Retrieve unverified evidence inside the trusted recommendation boundary."""
+
+    state = _state(value)
+    requirement = _current_requirement(state)
+    plan = state.agent_state.shopping_plan
+    try:
+        candidates = _evidence_candidates(state.last_tool_result)
+        evidence = evidence_service.retrieve(
+            plan_id=plan.plan_id,
+            plan_version=plan.version,
+            requirement=requirement,
+            candidates=candidates,
+        )
+        if not isinstance(evidence, RequirementEvidence):
+            raise TypeError("Evidence service returned an invalid result type.")
+        expected = (plan.plan_id, plan.version, requirement.requirement_id, candidates)
+        actual = (
+            evidence.plan_id,
+            evidence.retrieved_at_plan_version,
+            evidence.requirement_id,
+            evidence.candidates,
+        )
+        if actual != expected:
+            raise ValueError("Evidence service returned a stale or mismatched snapshot.")
+    except Exception as exc:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state=f"evidence_retrieval:{type(exc).__name__}",
+            ),
+            "current_evidence": None,
+            "route": WorkflowRoute.ERROR,
+        }
+    return {
+        "agent_state": _agent_update(
+            state.agent_state,
+            pending_action=WorkflowAction.SELECT_CANDIDATE.value,
+            error_state=None,
+        ),
+        "current_evidence": evidence,
+        "selected_parent_asin": None,
+        "route": WorkflowRoute.CONTINUE,
     }
 
 
@@ -241,6 +328,18 @@ def select_candidate_node(
     """Select rank one without an LLM or a second ranking policy."""
 
     state = _state(value)
+    try:
+        evidence = _validate_current_evidence(state)
+    except ValueError as exc:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state=f"evidence_validation:{type(exc).__name__}",
+            ),
+            "selected_parent_asin": None,
+            "route": WorkflowRoute.ERROR,
+        }
     result = state.last_tool_result
     candidates = () if result is None else tuple(
         item for item in result.items if item.rank == 1
@@ -251,6 +350,20 @@ def select_candidate_node(
                 state.agent_state,
                 pending_action=WorkflowAction.CONFLICT.value,
                 error_state="candidate_selection:rank_one_missing_or_ambiguous",
+            ),
+            "selected_parent_asin": None,
+            "route": WorkflowRoute.ERROR,
+        }
+    if not any(
+        product.parent_asin == candidates[0].parent_asin
+        and product.item_index == candidates[0].item_index
+        for product in evidence.products
+    ):
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state="evidence_validation:selected_candidate_missing",
             ),
             "selected_parent_asin": None,
             "route": WorkflowRoute.ERROR,
@@ -279,13 +392,34 @@ def candidate_selector_node(
     if result is None or result.returned_count == 0:
         return _planner_error(state, "candidate_result_missing")
     plan = state.agent_state.shopping_plan
+    try:
+        evidence = _validate_current_evidence(state)
+    except ValueError:
+        return _planner_error(state, "stale_or_missing_evidence")
+    evidence_by_parent = {value.parent_asin: value for value in evidence.products}
     context = {
         "decision_key": f"select_candidate:{plan.version}:{requirement.requirement_id}",
         "plan_id": plan.plan_id,
         "plan_version": plan.version,
         "requirement_id": requirement.requirement_id,
-        # Compact facts are read-only context; the decision returns identity only.
-        "candidates": tuple(item.model_dump(mode="json") for item in result.items),
+        # item_index remains system-only. Evidence text is untrusted data, not instructions.
+        "candidates": tuple({
+            "rank": item.rank,
+            "parent_asin": item.parent_asin,
+            "title": item.title,
+            "price": item.price,
+            "score": item.score,
+            "score_source": item.score_source,
+            "evidence_status": evidence.status.value,
+            "evidence": tuple({
+                "rank": snippet.rank,
+                "chunk_id": snippet.chunk_id,
+                "chunk_type": snippet.chunk_type.value,
+                "part_index": snippet.part_index,
+                "text": snippet.text,
+                "similarity_score": snippet.similarity_score,
+            } for snippet in evidence_by_parent[item.parent_asin].snippets),
+        } for item in result.items),
     }
     raw_decision = planner.decide(context=context)
     try:
@@ -323,6 +457,17 @@ def update_plan_node(
     """Apply the selected trusted candidate through ShoppingPlanService."""
 
     state = _state(value)
+    try:
+        evidence = _validate_current_evidence(state)
+    except ValueError as exc:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state=f"evidence_validation:{type(exc).__name__}",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
     if state.recommendation_args is None or state.last_tool_result is None:
         raise ValueError("Plan update requires recommendation args and tool result.")
     if state.selected_parent_asin is None:
@@ -357,6 +502,43 @@ def update_plan_node(
             ),
             "route": WorkflowRoute.ERROR,
         }
+    selected_tool_items = tuple(
+        item for item in state.last_tool_result.items
+        if item.parent_asin == state.selected_parent_asin
+    )
+    selected_products = tuple(
+        item for item in evidence.products
+        if item.parent_asin == state.selected_parent_asin
+    )
+    if (
+        len(selected_tool_items) != 1
+        or len(selected_products) != 1
+        or selected_tool_items[0].item_index != selected_products[0].item_index
+    ):
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state="evidence_validation:selected_identity_mismatch",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
+    product_evidence = selected_products[0]
+    selected_snapshot = SelectedProductEvidence(
+        plan_id=plan.plan_id,
+        selected_at_plan_version=plan.version,
+        requirement_id=requirement.requirement_id,
+        item_index=product_evidence.item_index,
+        parent_asin=product_evidence.parent_asin,
+        query=evidence.query,
+        snippets=product_evidence.snippets,
+        status=evidence.status,
+        provenance=evidence.provenance,
+    )
+    selected_history = tuple(
+        item for item in state.selected_evidence
+        if item.requirement_id != requirement.requirement_id
+    ) + (selected_snapshot,)
     return {
         "agent_state": _agent_update(
             state.agent_state,
@@ -365,6 +547,8 @@ def update_plan_node(
             error_state=None,
         ),
         "evaluation": None,
+        "current_evidence": None,
+        "selected_evidence": selected_history,
         "route": WorkflowRoute.CONTINUE,
     }
 
@@ -446,6 +630,8 @@ def build_shopping_workflow(
     recommendation_tool: Any,
     shopping_plan_service: Any,
     planner: Any | None = None,
+    *,
+    evidence_service: Any,
 ):
     """Build and compile the P0 graph using injected runtime dependencies."""
 
@@ -458,6 +644,8 @@ def build_shopping_workflow(
             raise TypeError(f"shopping_plan_service must provide {method}().")
     if planner is not None and not callable(getattr(planner, "decide", None)):
         raise TypeError("planner must provide decide().")
+    if evidence_service is None or not callable(getattr(evidence_service, "retrieve", None)):
+        raise TypeError("evidence_service must provide retrieve().")
 
     graph = StateGraph(ShoppingWorkflowState)
     requirement_node = "requirement_planner" if planner is not None else "select_requirement"
@@ -477,6 +665,10 @@ def build_shopping_workflow(
     graph.add_node(
         "recommend",
         _bound_node(recommend_node, recommendation_tool=recommendation_tool),
+    )
+    graph.add_node(
+        "retrieve_evidence",
+        _bound_node(retrieve_evidence_node, evidence_service=evidence_service),
     )
     graph.add_node(
         "update_plan",
@@ -504,8 +696,16 @@ def build_shopping_workflow(
         "recommend",
         _route,
         {
-            WorkflowRoute.CONTINUE.value: candidate_node,
+            WorkflowRoute.CONTINUE.value: "retrieve_evidence",
             WorkflowRoute.CONFLICT.value: "conflict",
+        },
+    )
+    graph.add_conditional_edges(
+        "retrieve_evidence",
+        _route,
+        {
+            WorkflowRoute.CONTINUE.value: candidate_node,
+            WorkflowRoute.ERROR.value: END,
         },
     )
     graph.add_conditional_edges(

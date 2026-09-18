@@ -150,9 +150,10 @@ class RecommendationToolTests(unittest.TestCase):
         self.assertEqual(result.returned_count, 1)
         item = result.items[0]
         self.assertEqual(item.score_source, "hybrid")
+        self.assertEqual(item.item_index, 42)
         self.assertEqual(
             set(type(item).model_fields),
-            {"rank", "parent_asin", "title", "price", "score", "score_source"},
+            {"rank", "item_index", "parent_asin", "title", "price", "score", "score_source"},
         )
         self.assertFalse(hasattr(item, "score_components"))
 

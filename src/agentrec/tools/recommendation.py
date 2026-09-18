@@ -62,6 +62,8 @@ class RecommendationToolItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     rank: Annotated[int, Field(strict=True, ge=1)]
+    # Canonical identity is projected by the trusted adapter, never supplied by the LLM.
+    item_index: Annotated[int, Field(strict=True, ge=0)]
     parent_asin: NonEmptyText
     title: NonEmptyText | None
     price: Annotated[float, Field(ge=0, allow_inf_nan=False)] | None
@@ -86,6 +88,10 @@ class RecommendationToolResult(BaseModel):
         expected_ranks = tuple(range(1, self.returned_count + 1))
         if tuple(item.rank for item in self.items) != expected_ranks:
             raise ValueError("Tool item ranks must be exactly 1..returned_count.")
+        if len({item.item_index for item in self.items}) != len(self.items):
+            raise ValueError("Tool result item_index values must be unique.")
+        if len({item.parent_asin for item in self.items}) != len(self.items):
+            raise ValueError("Tool result parent_asin values must be unique.")
         return self
 
 
@@ -127,6 +133,7 @@ class RecommendationToolAdapter:
     def _project_item(item: RecommendedProduct) -> RecommendationToolItem:
         return RecommendationToolItem(
             rank=item.rank,
+            item_index=item.item_index,
             parent_asin=item.parent_asin,
             title=item.title,
             price=item.price,
