@@ -39,6 +39,10 @@ def main() -> int:
     parser.add_argument("--max-rows", type=int)
     parser.add_argument("--progress-rows", type=int, default=4096)
     parser.add_argument(
+        "--resume-from", type=Path,
+        help="Explicit unpublished temporary directory containing export_progress.json.",
+    )
+    parser.add_argument(
         "--diagnostic", action="store_true",
         help="Permit a bounded row-range export for native-crash localization.",
     )
@@ -47,6 +51,10 @@ def main() -> int:
     formal_output = PROJECT_ROOT / "artifacts/recommendation/retrieval"
     output_dir = args.output_dir or formal_output
     partial_requested = args.start_row != 0 or args.max_rows is not None
+    if args.resume_from is not None and partial_requested:
+        parser.error("--resume-from cannot be combined with --start-row/--max-rows.")
+    if args.resume_from is not None and args.diagnostic:
+        parser.error("Formal resume cannot be combined with --diagnostic.")
     if partial_requested and not args.diagnostic:
         parser.error("--start-row/--max-rows require --diagnostic.")
     if args.diagnostic and args.output_dir is None:
@@ -61,7 +69,8 @@ def main() -> int:
         chunks_path=args.chunks, output_dir=output_dir,
         encoder=encoder, config=config, start_row=args.start_row,
         max_rows=args.max_rows, progress_rows=args.progress_rows,
-        diagnostic=args.diagnostic,
+        diagnostic=args.diagnostic, resume_from=args.resume_from,
+        model_path=args.model_path,
     )
     embedding = manifest["embedding"]
     print("V2-09.2a CHUNK EMBEDDING EXPORT: PASS")

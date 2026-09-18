@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -156,6 +155,35 @@ def _normalize_batch(vectors: object, rows: int, dimension: int) -> np.ndarray:
     return np.ascontiguousarray(array / norms[:, None], dtype=np.float32)
 
 
+def _validate_normalized_matrix(
+    matrix: np.ndarray, *, end_row: int | None = None, block_rows: int = 4096,
+) -> dict[str, float | int]:
+    """Validate a memmap in bounded blocks and return aggregate norm statistics."""
+
+    stop = matrix.shape[0] if end_row is None else end_row
+    count = 0
+    norm_sum = 0.0
+    norm_min = float("inf")
+    norm_max = float("-inf")
+    for begin in range(0, stop, block_rows):
+        block = matrix[begin:min(begin + block_rows, stop)]
+        if not np.isfinite(block).all():
+            raise ValueError("Embedding matrix contains NaN or Inf values.")
+        norms = np.linalg.norm(block, axis=1)
+        if not np.allclose(norms, 1.0, rtol=1e-5, atol=1e-6):
+            raise ValueError("Embedding matrix contains zero or non-normalized vectors.")
+        count += int(norms.size)
+        norm_sum += float(norms.sum(dtype=np.float64))
+        norm_min = min(norm_min, float(norms.min()))
+        norm_max = max(norm_max, float(norms.max()))
+    return {
+        "count": count,
+        "min": norm_min if count else 0.0,
+        "mean": norm_sum / count if count else 0.0,
+        "max": norm_max if count else 0.0,
+    }
+
+
 def _write_progress(path: Path, payload: dict[str, object]) -> None:
     """Atomically persist progress inside the unpublished temporary directory."""
 
@@ -166,12 +194,137 @@ def _write_progress(path: Path, payload: dict[str, object]) -> None:
     os.replace(temporary, path)
 
 
+def _model_contract(
+    settings: ChunkEmbeddingConfig, model_path: str | Path | None,
+) -> dict[str, object]:
+    return {
+        "name": settings.model_name,
+        "path": str(Path(model_path).resolve()) if model_path is not None else None,
+        "embedding_dimension": settings.embedding_dimension,
+        "batch_size": settings.batch_size,
+        "max_length": settings.max_length,
+        "device": settings.device,
+        "use_fp16": settings.use_fp16,
+        "dense_only": True,
+    }
+
+
+def _resume_contract(
+    *, source_fingerprint: str, total_source_rows: int,
+    start_row: int, end_row: int, diagnostic: bool,
+    settings: ChunkEmbeddingConfig, model_path: str | Path | None,
+) -> dict[str, object]:
+    return {
+        "artifact_version": ARTIFACT_VERSION,
+        "source_sha256": source_fingerprint,
+        "total_source_rows": total_source_rows,
+        "source_start_row": start_row,
+        "source_end_row_exclusive": end_row,
+        "mode": "diagnostic" if diagnostic else "full",
+        "embedding_shape": [end_row - start_row, settings.embedding_dimension],
+        "embedding_dtype": "float32",
+        "model": _model_contract(settings, model_path),
+    }
+
+
+def _load_resume_checkpoint(
+    *, temporary: Path, expected_contract: dict[str, object],
+    allow_legacy_contract: bool = False,
+) -> tuple[dict[str, object], int]:
+    """Validate an unpublished export without modifying it, then return commit row."""
+
+    progress_path = temporary / PROGRESS_FILE
+    embedding_path = temporary / EMBEDDING_FILE
+    if not temporary.is_dir():
+        raise FileNotFoundError(f"Resume directory not found: {temporary}")
+    if not progress_path.is_file() or not embedding_path.is_file():
+        raise ValueError("Resume directory must contain checkpoint and embedding memmap.")
+    if (temporary / MANIFEST_FILE).exists() or (temporary / METADATA_FILE).exists():
+        raise ValueError("Resume directory contains final artifact files; refusing mutation.")
+    try:
+        progress = json.loads(progress_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError("Resume checkpoint is unreadable.") from exc
+    if progress.get("status") != "encoding":
+        raise ValueError("Resume checkpoint status must be 'encoding'.")
+    stored_contract = progress.get("contract")
+    legacy_matches = allow_legacy_contract and stored_contract is None and all((
+        progress.get("mode") == expected_contract["mode"] == "full",
+        progress.get("source_start_row") == expected_contract["source_start_row"] == 0,
+        progress.get("source_end_row_exclusive")
+        == expected_contract["source_end_row_exclusive"],
+    ))
+    if stored_contract != expected_contract and not legacy_matches:
+        raise ValueError("Resume checkpoint contract is missing or incompatible.")
+    start_row = expected_contract["source_start_row"]
+    end_row = expected_contract["source_end_row_exclusive"]
+    committed = progress.get("last_flushed_source_row_exclusive")
+    processed = progress.get("processed_rows")
+    if (
+        isinstance(committed, bool) or not isinstance(committed, int)
+        or not start_row <= committed <= end_row
+    ):
+        raise ValueError("Resume checkpoint has an invalid committed row boundary.")
+    if (
+        isinstance(processed, bool) or not isinstance(processed, int)
+        or processed < committed - start_row or processed > end_row - start_row
+    ):
+        raise ValueError("Resume checkpoint processed_rows is inconsistent.")
+
+    matrix = np.load(embedding_path, mmap_mode="r", allow_pickle=False)
+    expected_shape = tuple(expected_contract["embedding_shape"])
+    if matrix.shape != expected_shape or matrix.dtype != np.dtype(np.float32):
+        raise ValueError("Resume embedding shape/dtype is incompatible with checkpoint.")
+    committed_count = committed - start_row
+    if committed_count:
+        try:
+            _validate_normalized_matrix(matrix, end_row=committed_count)
+        except ValueError as exc:
+            raise ValueError(f"Committed embedding prefix is invalid: {exc}") from exc
+    del matrix
+    return progress, committed
+
+
+def _allow_frozen_legacy_resume(
+    *, source: Path, source_fingerprint: str, settings: ChunkEmbeddingConfig,
+    model_path: str | Path | None, start_row: int, end_row: int,
+    total_source_rows: int,
+) -> bool:
+    """Authorize only the pre-contract formal exporter using frozen project paths.
+
+    The knowledge manifest supplies the source fingerprint that the old progress
+    file lacked. The remaining model settings were immutable CLI constants in
+    that exporter version. No diagnostic or custom-path checkpoint is adopted.
+    """
+
+    project_root = source.parents[3] if len(source.parents) > 3 else None
+    if project_root is None or model_path is None:
+        return False
+    expected_source = project_root / "artifacts/recommendation/knowledge/chunks.jsonl"
+    expected_model = project_root / "models/bge-m3"
+    if source != expected_source.resolve() or Path(model_path).resolve() != expected_model.resolve():
+        return False
+    if start_row != 0 or end_row != total_source_rows or settings != ChunkEmbeddingConfig():
+        return False
+    knowledge_manifest = source.parent / "knowledge_manifest.json"
+    if not knowledge_manifest.is_file():
+        return False
+    try:
+        manifest = json.loads(knowledge_manifest.read_text(encoding="utf-8"))
+        expected_sha = manifest["outputs"][source.name]["sha256"]
+    except (KeyError, TypeError, json.JSONDecodeError, OSError):
+        return False
+    return expected_sha == source_fingerprint
+
+
 def build_chunk_embedding_artifacts(
     *, chunks_path: str | Path, output_dir: str | Path,
     encoder: DenseTextEncoder, config: ChunkEmbeddingConfig | None = None,
     start_row: int = 0, max_rows: int | None = None,
     progress_rows: int = 4096, diagnostic: bool = False,
     progress_callback: Callable[[str], None] | None = print,
+    resume_from: str | Path | None = None,
+    model_path: str | Path | None = None,
 ) -> dict[str, object]:
     """Encode chunks incrementally and atomically publish one retrieval bundle."""
 
@@ -209,26 +362,55 @@ def build_chunk_embedding_artifacts(
         {"row": embedding_row, **identity}
         for embedding_row, identity in enumerate(all_identities[start_row:end_row])
     ]
+    contract = _resume_contract(
+        source_fingerprint=source_fingerprint, total_source_rows=total_source_rows,
+        start_row=start_row, end_row=end_row, diagnostic=not is_full_export,
+        settings=settings, model_path=model_path,
+    )
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+    resumed = resume_from is not None
+    if resumed:
+        temporary = Path(resume_from).resolve()
+        if temporary.parent != destination.parent:
+            raise ValueError("Resume directory and output directory must share a parent for atomic publish.")
+        progress, committed_source_row = _load_resume_checkpoint(
+            temporary=temporary, expected_contract=contract,
+            allow_legacy_contract=_allow_frozen_legacy_resume(
+                source=source, source_fingerprint=source_fingerprint,
+                settings=settings, model_path=model_path, start_row=start_row,
+                end_row=end_row, total_source_rows=total_source_rows,
+            ),
+        )
+    else:
+        temporary = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+        progress = {}
+        committed_source_row = start_row
     try:
         embedding_path = temporary / EMBEDDING_FILE
-        matrix = np.lib.format.open_memmap(
-            embedding_path, mode="w+", dtype=np.float32,
-            shape=(len(identities), settings.embedding_dimension),
-        )
-        next_row = 0
+        if resumed:
+            matrix = np.load(embedding_path, mmap_mode="r+", allow_pickle=False)
+        else:
+            matrix = np.lib.format.open_memmap(
+                embedding_path, mode="w+", dtype=np.float32,
+                shape=(len(identities), settings.embedding_dimension),
+            )
+        next_row = committed_source_row - start_row
         texts: list[str] = []
-        source_batch_start = start_row
+        source_batch_start = committed_source_row
         progress_path = temporary / PROGRESS_FILE
-        progress = {
+        progress.update({
             "status": "encoding", "mode": "full" if is_full_export else "diagnostic",
             "source_start_row": start_row, "source_end_row_exclusive": end_row,
-            "processed_rows": 0, "last_flushed_source_row_exclusive": start_row,
+            # Discard any computed-but-uncommitted tail and restart at the flush boundary.
+            "processed_rows": next_row,
+            "last_flushed_source_row_exclusive": committed_source_row,
             "active_source_row_range": None,
-        }
+            "active_chunk_ids": None,
+            "active_text_length_chars": None,
+            "contract": contract,
+        })
         _write_progress(progress_path, progress)
-        next_flush_at = progress_rows
+        next_flush_at = ((next_row // progress_rows) + 1) * progress_rows
 
         def emit(message: str) -> None:
             if progress_callback is not None:
@@ -280,7 +462,7 @@ def build_chunk_embedding_artifacts(
 
         with source.open("r", encoding="utf-8") as handle:
             for source_row, line in enumerate(handle):
-                if source_row < start_row:
+                if source_row < committed_source_row:
                     continue
                 if source_row >= end_row:
                     break
@@ -297,17 +479,14 @@ def build_chunk_embedding_artifacts(
         del matrix
 
         stored = np.load(embedding_path, mmap_mode="r", allow_pickle=False)
-        norms = np.linalg.norm(stored, axis=1)
         if stored.shape != (len(identities), settings.embedding_dimension):
             raise RuntimeError("Stored embedding shape verification failed.")
-        if stored.dtype != np.dtype(np.float32) or not np.isfinite(stored).all():
-            raise RuntimeError("Stored embeddings failed dtype/finite verification.")
-        if not np.allclose(norms, 1.0, rtol=1e-5, atol=1e-6):
-            raise RuntimeError("Stored embeddings failed L2 normalization verification.")
-        norm_statistics = {
-            "count": int(norms.size), "min": float(norms.min()),
-            "mean": float(norms.mean()), "max": float(norms.max()),
-        }
+        if stored.dtype != np.dtype(np.float32):
+            raise RuntimeError("Stored embeddings failed dtype verification.")
+        try:
+            norm_statistics = _validate_normalized_matrix(stored)
+        except ValueError as exc:
+            raise RuntimeError(f"Stored embedding validation failed: {exc}") from exc
         del stored
 
         metadata = {
@@ -337,13 +516,7 @@ def build_chunk_embedding_artifacts(
                 "selected_row_range": [start_row, end_row],
             },
             "model": {
-                "name": settings.model_name,
-                "embedding_dimension": settings.embedding_dimension,
-                "batch_size": settings.batch_size,
-                "max_length": settings.max_length,
-                "device": settings.device,
-                "use_fp16": settings.use_fp16,
-                "dense_only": True,
+                **_model_contract(settings, model_path),
                 "execution_contract": "single process, one configured CUDA device",
             },
             "embedding": {
@@ -364,7 +537,7 @@ def build_chunk_embedding_artifacts(
         os.replace(temporary, destination)
         return manifest
     except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        # Keep the unpublished directory and checkpoint for inspection or resume.
         raise
 
 
@@ -406,11 +579,7 @@ def validate_chunk_embedding_artifacts(
         raise ValueError("Embedding shape does not match manifest/metadata.")
     if array.dtype != np.dtype(np.float32) or not array.flags.c_contiguous:
         raise ValueError("Embeddings must be contiguous float32.")
-    if not np.isfinite(array).all():
-        raise ValueError("Embeddings contain NaN or Inf values.")
-    norms = np.linalg.norm(array, axis=1)
-    if not np.allclose(norms, 1.0, rtol=1e-5, atol=1e-6):
-        raise ValueError("Embeddings are not L2 normalized.")
+    _validate_normalized_matrix(array)
     if expected_chunks_path is not None:
         source = Path(expected_chunks_path).resolve()
         expected_fingerprint = manifest.get("source", {}).get("sha256")

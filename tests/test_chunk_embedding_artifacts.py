@@ -42,6 +42,20 @@ class FailingEncoder(FakeEncoder):
         return super().encode(texts)
 
 
+class AlwaysFailEncoder(FakeEncoder):
+    def encode(self, texts: list[str]) -> np.ndarray:
+        raise RuntimeError("simulated encoder failure")
+
+
+class RecordingEncoder(FakeEncoder):
+    def __init__(self) -> None:
+        self.encoded_texts: list[str] = []
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        self.encoded_texts.extend(texts)
+        return super().encode(texts)
+
+
 def _write_chunks(path: Path, *, duplicate: bool = False) -> None:
     values = [
         {"chunk_id": "0:summary:0", "chunk_index": 0, "item_index": 0,
@@ -74,6 +88,17 @@ class ChunkEmbeddingArtifactTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def _interrupted_full_export(self, chunks: Path, destination: Path) -> Path:
+        with self.assertRaisesRegex(RuntimeError, "simulated encoder failure"):
+            build_chunk_embedding_artifacts(
+                chunks_path=chunks, output_dir=destination,
+                encoder=FailingEncoder(), config=_config(), progress_rows=1,
+                progress_callback=None,
+            )
+        matches = list(self.root.glob(f".{destination.name}.*"))
+        self.assertEqual(len(matches), 1)
+        return matches[0]
 
     def test_build_preserves_identity_and_normalizes(self) -> None:
         chunks = self.root / "chunks.jsonl"
@@ -186,6 +211,106 @@ class ChunkEmbeddingArtifactTests(unittest.TestCase):
                 progress_callback=None,
             )
         self.assertFalse(output.exists())
+
+    def test_resume_uses_flushed_boundary_and_preserves_committed_prefix(self) -> None:
+        chunks = self.root / "chunks.jsonl"
+        output = self.root / "formal"
+        _write_chunks(chunks)
+        temporary = self._interrupted_full_export(chunks, output)
+        matrix = np.load(temporary / "chunk_embeddings.npy", mmap_mode="r+")
+        committed_prefix = np.array(matrix[:2], copy=True)
+        matrix[2] = np.asarray([0.5, 0.5, 0.5, 0.5], dtype=np.float32)
+        matrix.flush()
+        del matrix
+        checkpoint_path = temporary / "export_progress.json"
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        checkpoint["processed_rows"] = 3
+        checkpoint["active_source_row_range"] = [2, 3]
+        checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+        encoder = RecordingEncoder()
+        build_chunk_embedding_artifacts(
+            chunks_path=chunks, output_dir=output, encoder=encoder,
+            config=_config(), progress_rows=1, progress_callback=None,
+            resume_from=temporary,
+        )
+        completed = np.load(output / "chunk_embeddings.npy", allow_pickle=False)
+        np.testing.assert_array_equal(completed[:2], committed_prefix)
+        expected_tail = _normalize_reference(FakeEncoder().encode(["Compact laptop adapter"]))
+        np.testing.assert_allclose(completed[2:3], expected_tail, atol=1e-7)
+        self.assertEqual(encoder.encoded_texts, ["Compact laptop adapter"])
+        self.assertFalse((output / "export_progress.json").exists())
+        validate_chunk_embedding_artifacts(output, expected_chunks_path=chunks)
+
+    def test_resume_rejects_source_fingerprint_mismatch(self) -> None:
+        chunks = self.root / "chunks.jsonl"
+        output = self.root / "formal"
+        _write_chunks(chunks)
+        temporary = self._interrupted_full_export(chunks, output)
+        changed = chunks.read_text(encoding="utf-8").replace(
+            "Compact laptop adapter", "Changed laptop adapter"
+        )
+        chunks.write_text(changed, encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "contract is missing or incompatible"):
+            build_chunk_embedding_artifacts(
+                chunks_path=chunks, output_dir=output, encoder=FakeEncoder(),
+                config=_config(), resume_from=temporary, progress_callback=None,
+            )
+        self.assertTrue(temporary.exists())
+        self.assertFalse(output.exists())
+
+    def test_resume_rejects_incompatible_config_and_shape(self) -> None:
+        chunks = self.root / "chunks.jsonl"
+        output = self.root / "formal"
+        _write_chunks(chunks)
+        temporary = self._interrupted_full_export(chunks, output)
+        incompatible = ChunkEmbeddingConfig(
+            model_name="different-model", embedding_dimension=4,
+            batch_size=2, max_length=32, device="cuda:0", use_fp16=True,
+        )
+        with self.assertRaisesRegex(ValueError, "contract is missing or incompatible"):
+            build_chunk_embedding_artifacts(
+                chunks_path=chunks, output_dir=output, encoder=FakeEncoder(),
+                config=incompatible, resume_from=temporary, progress_callback=None,
+            )
+
+        incompatible_matrix = np.lib.format.open_memmap(
+            temporary / "chunk_embeddings.npy", mode="w+", dtype=np.float32,
+            shape=(2, 4),
+        )
+        incompatible_matrix.flush()
+        del incompatible_matrix
+        with self.assertRaisesRegex(ValueError, "shape/dtype is incompatible"):
+            build_chunk_embedding_artifacts(
+                chunks_path=chunks, output_dir=output, encoder=FakeEncoder(),
+                config=_config(), resume_from=temporary, progress_callback=None,
+            )
+        self.assertTrue(temporary.exists())
+
+    def test_diagnostic_checkpoint_cannot_resume_as_formal_export(self) -> None:
+        chunks = self.root / "chunks.jsonl"
+        diagnostic_output = self.root / "diagnostic"
+        formal_output = self.root / "formal"
+        _write_chunks(chunks)
+        with self.assertRaisesRegex(RuntimeError, "simulated encoder failure"):
+            build_chunk_embedding_artifacts(
+                chunks_path=chunks, output_dir=diagnostic_output,
+                encoder=AlwaysFailEncoder(), config=_config(), start_row=1,
+                max_rows=2, diagnostic=True, progress_callback=None,
+            )
+        temporary = next(self.root.glob(".diagnostic.*"))
+        with self.assertRaisesRegex(ValueError, "share a parent|contract"):
+            build_chunk_embedding_artifacts(
+                chunks_path=chunks, output_dir=formal_output,
+                encoder=FakeEncoder(), config=_config(),
+                resume_from=temporary, progress_callback=None,
+            )
+        self.assertFalse(formal_output.exists())
+
+
+def _normalize_reference(values: np.ndarray) -> np.ndarray:
+    array = np.asarray(values, dtype=np.float32)
+    return np.ascontiguousarray(array / np.linalg.norm(array, axis=1)[:, None])
 
 
 if __name__ == "__main__":
