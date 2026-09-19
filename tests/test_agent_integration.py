@@ -15,6 +15,7 @@ from src.agentrec.planning import (
 from src.agentrec.services import ShoppingPlanService
 from tests.test_shopping_workflow import FakeRecommendationTool
 from tests.fake_evidence import FakeEvidenceService
+from src.agentrec.verification import EvidenceConstraintVerifier
 
 
 REQUESTS = {
@@ -62,6 +63,7 @@ def runner(request_names, prices, *, empty_category=None, plan_id="integration-p
         planner=planner_for(plan_id, [REQUESTS[name][0] for name in request_names]),
         recommendation_tool=FakeRecommendationTool(prices, empty_category=empty_category),
         evidence_service=FakeEvidenceService(),
+        verification_service=EvidenceConstraintVerifier(),
         shopping_plan_service=ShoppingPlanService(),
     )
 
@@ -102,6 +104,7 @@ class AgentIntegrationTests(unittest.TestCase):
             planner=planner_for("integration-plan", ("headphones",)),
             recommendation_tool=FakeRecommendationTool({"Headphones": 180}),
             evidence_service=FakeEvidenceService(),
+            verification_service=EvidenceConstraintVerifier(),
             shopping_plan_service=ShoppingPlanService(),
         )
         result = service.run(
@@ -136,6 +139,7 @@ class AgentIntegrationTests(unittest.TestCase):
             planner=planner_for("integration-plan", ("dock", "mouse", "headphones")),
             recommendation_tool=FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 400}),
             evidence_service=FakeEvidenceService(),
+            verification_service=EvidenceConstraintVerifier(),
             shopping_plan_service=ShoppingPlanService(),
         )
         result = service.run(

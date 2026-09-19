@@ -6,6 +6,7 @@ from src.agentrec.services import ShoppingPlanService
 from src.agentrec.workflows import ShoppingWorkflowState, WorkflowRoute, build_shopping_workflow
 from tests.fake_evidence import FakeEvidenceService
 from tests.test_shopping_workflow import FakeRecommendationTool, initial_state
+from src.agentrec.verification import EvidenceConstraintVerifier
 
 
 class GroundedWorkflowTests(unittest.TestCase):
@@ -13,7 +14,8 @@ class GroundedWorkflowTests(unittest.TestCase):
         evidence = FakeEvidenceService()
         graph = build_shopping_workflow(
             FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180}),
-            ShoppingPlanService(), evidence_service=evidence)
+            ShoppingPlanService(), evidence_service=evidence,
+            verification_service=EvidenceConstraintVerifier())
         final = ShoppingWorkflowState.model_validate(
             graph.invoke(initial_state(), config={"recursion_limit": 50}))
         self.assertEqual([call[1] for call in evidence.calls], [0, 1, 2])
@@ -24,7 +26,8 @@ class GroundedWorkflowTests(unittest.TestCase):
     def test_retrieval_failure_is_error_and_does_not_mutate_plan(self):
         graph = build_shopping_workflow(
             FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180}),
-            ShoppingPlanService(), evidence_service=FakeEvidenceService(fail=True))
+            ShoppingPlanService(), evidence_service=FakeEvidenceService(fail=True),
+            verification_service=EvidenceConstraintVerifier())
         final = ShoppingWorkflowState.model_validate(
             graph.invoke(initial_state(), config={"recursion_limit": 50}))
         self.assertEqual(final.route, WorkflowRoute.ERROR)

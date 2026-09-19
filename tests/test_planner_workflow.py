@@ -13,6 +13,7 @@ from src.agentrec.services import ShoppingPlanService
 from src.agentrec.workflows import ShoppingWorkflowState, WorkflowRoute, build_shopping_workflow
 from tests.test_shopping_workflow import FakeRecommendationTool, initial_state
 from tests.fake_evidence import FakeEvidenceService
+from src.agentrec.verification import EvidenceConstraintVerifier
 
 
 PRICES = {"Dock": 120, "Mouse": 30, "Headphones": 180}
@@ -44,6 +45,7 @@ def invoke_with_planner(planner: FakePlanner):
     graph = build_shopping_workflow(
         tool, ShoppingPlanService(), planner=planner,
         evidence_service=FakeEvidenceService(),
+        verification_service=EvidenceConstraintVerifier(),
     )
     output = graph.invoke(initial_state(), config={"recursion_limit": 50})
     return ShoppingWorkflowState.model_validate(output), tool
@@ -100,7 +102,8 @@ class PlannerWorkflowTests(unittest.TestCase):
     def test_existing_deterministic_fallback_still_runs(self) -> None:
         tool = FakeRecommendationTool(PRICES)
         graph = build_shopping_workflow(
-            tool, ShoppingPlanService(), evidence_service=FakeEvidenceService()
+            tool, ShoppingPlanService(), evidence_service=FakeEvidenceService(),
+            verification_service=EvidenceConstraintVerifier(),
         )
         final = ShoppingWorkflowState.model_validate(
             graph.invoke(initial_state(), config={"recursion_limit": 50})

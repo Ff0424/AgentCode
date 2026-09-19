@@ -59,6 +59,7 @@ class AgentTaskRunner:
         planner: Any,
         recommendation_tool: Any,
         evidence_service: Any,
+        verification_service: Any,
         shopping_plan_service: ShoppingPlanService,
     ) -> None:
         dependencies = (
@@ -66,6 +67,7 @@ class AgentTaskRunner:
             (planner, "decide", "planner"),
             (recommendation_tool, "recommend", "recommendation_tool"),
             (evidence_service, "retrieve", "evidence_service"),
+            (verification_service, "verify", "verification_service"),
             (shopping_plan_service, "create_plan", "shopping_plan_service"),
         )
         for dependency, method, name in dependencies:
@@ -75,6 +77,7 @@ class AgentTaskRunner:
         self._planner = planner
         self._recommendation_tool = recommendation_tool
         self._evidence_service = evidence_service
+        self._verification_service = verification_service
         self._plan_service = shopping_plan_service
 
     def run(
@@ -134,6 +137,7 @@ class AgentTaskRunner:
             self._plan_service,
             planner=self._planner,
             evidence_service=self._evidence_service,
+            verification_service=self._verification_service,
         )
         output = ShoppingWorkflowState.model_validate(
             graph.invoke(initial, config={"recursion_limit": recursion_limit})

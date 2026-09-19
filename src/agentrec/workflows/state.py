@@ -9,6 +9,7 @@ from ..evidence import RequirementEvidence, SelectedProductEvidence
 from ..planning import PlannerDecision
 from ..services import PlanEvaluation
 from ..tools import RecommendationToolArgs, RecommendationToolResult
+from ..verification import RequirementVerification, SelectedCandidateVerification
 from .routes import WorkflowRoute
 
 
@@ -25,6 +26,8 @@ class ShoppingWorkflowState(BaseModel):
     planner_decision: PlannerDecision | None = None
     current_evidence: RequirementEvidence | None = None
     selected_evidence: tuple[SelectedProductEvidence, ...] = ()
+    current_verification: RequirementVerification | None = None
+    selected_verifications: tuple[SelectedCandidateVerification, ...] = ()
     route: WorkflowRoute | None = None
 
     @model_validator(mode="after")
@@ -57,4 +60,24 @@ class ShoppingWorkflowState(BaseModel):
             self.selected_evidence
         ):
             raise ValueError("selected_evidence may contain one current snapshot per requirement.")
+        if self.current_verification is not None:
+            if self.current_evidence is None:
+                raise ValueError("current_verification requires current_evidence.")
+            if (
+                self.current_verification.plan_id != plan.plan_id
+                or self.current_verification.requirement_id != self.agent_state.current_requirement_id
+                or self.current_verification.verified_at_plan_version != plan.version
+                or self.current_verification.verified_at_plan_version
+                != self.current_evidence.retrieved_at_plan_version
+            ):
+                raise ValueError("current_verification must match current evidence and plan.")
+        if any(
+            value.plan_id != plan.plan_id or value.selected_at_plan_version > plan.version
+            for value in self.selected_verifications
+        ):
+            raise ValueError("selected_verifications are not aligned with plan history.")
+        if len({value.requirement_id for value in self.selected_verifications}) != len(
+            self.selected_verifications
+        ):
+            raise ValueError("selected_verifications may contain one snapshot per requirement.")
         return self

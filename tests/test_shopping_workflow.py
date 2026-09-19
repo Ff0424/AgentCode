@@ -13,6 +13,7 @@ from src.agentrec.workflows import (
     build_shopping_workflow,
 )
 from tests.fake_evidence import FakeEvidenceService
+from src.agentrec.verification import EvidenceConstraintVerifier
 
 
 class FakeRecommendationTool:
@@ -78,7 +79,8 @@ def initial_state() -> ShoppingWorkflowState:
 def run(prices: dict[str, float], *, empty_category: str | None = None):
     tool = FakeRecommendationTool(prices, empty_category=empty_category)
     graph = build_shopping_workflow(
-        tool, ShoppingPlanService(), evidence_service=FakeEvidenceService()
+        tool, ShoppingPlanService(), evidence_service=FakeEvidenceService(),
+        verification_service=EvidenceConstraintVerifier(),
     )
     output = graph.invoke(initial_state(), config={"recursion_limit": 50})
     return ShoppingWorkflowState.model_validate(output), tool
@@ -88,7 +90,8 @@ class ShoppingWorkflowTests(unittest.TestCase):
     def test_graph_compiles_and_dependencies_are_not_state_fields(self) -> None:
         tool = FakeRecommendationTool({"Dock": 120, "Mouse": 30, "Headphones": 180})
         graph = build_shopping_workflow(
-            tool, ShoppingPlanService(), evidence_service=FakeEvidenceService()
+            tool, ShoppingPlanService(), evidence_service=FakeEvidenceService(),
+            verification_service=EvidenceConstraintVerifier(),
         )
         self.assertTrue(callable(graph.invoke))
         fields = set(ShoppingWorkflowState.model_fields)

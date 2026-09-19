@@ -27,6 +27,11 @@ from ..planning import (
 )
 from ..services import ShoppingPlanServiceError
 from ..tools import RecommendationToolArgs
+from ..verification import (
+    CandidateVerificationStatus,
+    RequirementVerification,
+    SelectedCandidateVerification,
+)
 from .routes import WorkflowAction, WorkflowRoute
 from .state import ShoppingWorkflowState
 
@@ -111,6 +116,7 @@ def select_requirement_node(
         "evaluation": None,
         "planner_decision": None,
         "current_evidence": None,
+        "current_verification": None,
         "route": route,
     }
 
@@ -187,6 +193,7 @@ def requirement_planner_node(
         "evaluation": None,
         "planner_decision": decision,
         "current_evidence": None,
+        "current_verification": None,
         "route": WorkflowRoute.CONTINUE,
     }
 
@@ -239,6 +246,7 @@ def recommend_node(
         "selected_parent_asin": None,
         "evaluation": None,
         "current_evidence": None,
+        "current_verification": None,
         "route": route,
     }
 
@@ -308,6 +316,83 @@ def retrieve_evidence_node(
                 error_state=f"evidence_retrieval:{type(exc).__name__}",
             ),
             "current_evidence": None,
+            "current_verification": None,
+            "route": WorkflowRoute.ERROR,
+        }
+    return {
+        "agent_state": _agent_update(
+            state.agent_state,
+            pending_action=WorkflowAction.VERIFY_CONSTRAINTS.value,
+            error_state=None,
+        ),
+        "current_evidence": evidence,
+        "current_verification": None,
+        "selected_parent_asin": None,
+        "route": WorkflowRoute.CONTINUE,
+    }
+
+
+def verify_constraints_node(
+    value: ShoppingWorkflowState | dict[str, Any],
+    *,
+    verification_service: Any,
+) -> dict[str, Any]:
+    """Verify hard features and expose only deterministic eligible candidates."""
+
+    state = _state(value)
+    requirement = _current_requirement(state)
+    plan = state.agent_state.shopping_plan
+    try:
+        evidence = _validate_current_evidence(state)
+        if not requirement.required_features:
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    pending_action=WorkflowAction.SELECT_CANDIDATE.value,
+                    error_state=None,
+                ),
+                "current_verification": None,
+                "route": WorkflowRoute.CONTINUE,
+            }
+        verification = verification_service.verify(
+            requirement=requirement,
+            evidence=evidence,
+            current_plan_id=plan.plan_id,
+            current_plan_version=plan.version,
+        )
+        if not isinstance(verification, RequirementVerification):
+            raise TypeError("Verification service returned an invalid result type.")
+        expected_pairs = tuple(
+            (item.item_index, item.parent_asin) for item in evidence.products
+        )
+        actual_pairs = tuple(
+            (item.item_index, item.parent_asin) for item in verification.candidates
+        )
+        if (
+            verification.plan_id != plan.plan_id
+            or verification.requirement_id != requirement.requirement_id
+            or verification.verified_at_plan_version != plan.version
+            or actual_pairs != expected_pairs
+        ):
+            raise ValueError("Verification snapshot is stale or identity-mismatched.")
+        if not verification.eligible_parent_asins:
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    pending_action=WorkflowAction.CONFLICT.value,
+                    error_state="constraint_verification:no_eligible_candidates",
+                ),
+                "current_verification": verification,
+                "route": WorkflowRoute.CONFLICT,
+            }
+    except Exception as exc:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state=f"constraint_verification:{type(exc).__name__}",
+            ),
+            "current_verification": None,
             "route": WorkflowRoute.ERROR,
         }
     return {
@@ -316,10 +401,31 @@ def retrieve_evidence_node(
             pending_action=WorkflowAction.SELECT_CANDIDATE.value,
             error_state=None,
         ),
-        "current_evidence": evidence,
-        "selected_parent_asin": None,
+        "current_verification": verification,
         "route": WorkflowRoute.CONTINUE,
     }
+
+
+def _eligible_parent_asins(state: ShoppingWorkflowState) -> tuple[str, ...]:
+    requirement = _current_requirement(state)
+    result = state.last_tool_result
+    if result is None:
+        raise ValueError("Candidate selection requires a Tool Result.")
+    if not requirement.required_features:
+        if state.current_verification is not None:
+            raise ValueError("Feature-free requirement must skip verification.")
+        return tuple(item.parent_asin for item in result.items)
+    verification = state.current_verification
+    if verification is None:
+        raise ValueError("Hard-feature candidate selection requires verification.")
+    plan = state.agent_state.shopping_plan
+    if (
+        verification.plan_id != plan.plan_id
+        or verification.requirement_id != requirement.requirement_id
+        or verification.verified_at_plan_version != plan.version
+    ):
+        raise ValueError("Candidate verification is stale.")
+    return verification.eligible_parent_asins
 
 
 def select_candidate_node(
@@ -330,6 +436,7 @@ def select_candidate_node(
     state = _state(value)
     try:
         evidence = _validate_current_evidence(state)
+        eligible = _eligible_parent_asins(state)
     except ValueError as exc:
         return {
             "agent_state": _agent_update(
@@ -342,14 +449,15 @@ def select_candidate_node(
         }
     result = state.last_tool_result
     candidates = () if result is None else tuple(
-        item for item in result.items if item.rank == 1
+        item for item in result.items if item.parent_asin in eligible
     )
+    candidates = tuple(sorted(candidates, key=lambda item: item.rank)[:1])
     if len(candidates) != 1:
         return {
             "agent_state": _agent_update(
                 state.agent_state,
                 pending_action=WorkflowAction.CONFLICT.value,
-                error_state="candidate_selection:rank_one_missing_or_ambiguous",
+                error_state="candidate_selection:eligible_candidate_missing_or_ambiguous",
             ),
             "selected_parent_asin": None,
             "route": WorkflowRoute.ERROR,
@@ -394,8 +502,9 @@ def candidate_selector_node(
     plan = state.agent_state.shopping_plan
     try:
         evidence = _validate_current_evidence(state)
+        eligible = _eligible_parent_asins(state)
     except ValueError:
-        return _planner_error(state, "stale_or_missing_evidence")
+        return _planner_error(state, "stale_or_missing_evidence_or_verification")
     evidence_by_parent = {value.parent_asin: value for value in evidence.products}
     context = {
         "decision_key": f"select_candidate:{plan.version}:{requirement.requirement_id}",
@@ -419,7 +528,7 @@ def candidate_selector_node(
                 "text": snippet.text,
                 "similarity_score": snippet.similarity_score,
             } for snippet in evidence_by_parent[item.parent_asin].snippets),
-        } for item in result.items),
+        } for item in result.items if item.parent_asin in eligible),
     }
     raw_decision = planner.decide(context=context)
     try:
@@ -437,6 +546,8 @@ def candidate_selector_node(
     )
     if len(matches) != 1:
         return _planner_error(state, "candidate_not_in_tool_result")
+    if decision.parent_asin not in set(eligible):
+        return _planner_error(state, "candidate_not_eligible")
     return {
         "agent_state": _agent_update(
             state.agent_state,
@@ -459,6 +570,7 @@ def update_plan_node(
     state = _state(value)
     try:
         evidence = _validate_current_evidence(state)
+        eligible = _eligible_parent_asins(state)
     except ValueError as exc:
         return {
             "agent_state": _agent_update(
@@ -472,6 +584,15 @@ def update_plan_node(
         raise ValueError("Plan update requires recommendation args and tool result.")
     if state.selected_parent_asin is None:
         raise ValueError("Plan update requires selected_parent_asin.")
+    if state.selected_parent_asin not in set(eligible):
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state="constraint_verification:selected_candidate_not_eligible",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
     requirement = _current_requirement(state)
     already_selected = sum(
         item.quantity
@@ -539,6 +660,30 @@ def update_plan_node(
         item for item in state.selected_evidence
         if item.requirement_id != requirement.requirement_id
     ) + (selected_snapshot,)
+    selected_verifications = state.selected_verifications
+    if state.current_verification is not None:
+        matches = tuple(
+            item for item in state.current_verification.candidates
+            if item.parent_asin == state.selected_parent_asin
+        )
+        if len(matches) != 1 or matches[0].status is not CandidateVerificationStatus.ELIGIBLE:
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    pending_action=WorkflowAction.CONFLICT.value,
+                    error_state="constraint_verification:selected_candidate_not_eligible",
+                ),
+                "route": WorkflowRoute.ERROR,
+            }
+        selected_verifications = tuple(
+            item for item in state.selected_verifications
+            if item.requirement_id != requirement.requirement_id
+        ) + (SelectedCandidateVerification(
+            plan_id=plan.plan_id,
+            requirement_id=requirement.requirement_id,
+            selected_at_plan_version=plan.version,
+            candidate=matches[0],
+        ),)
     return {
         "agent_state": _agent_update(
             state.agent_state,
@@ -548,7 +693,9 @@ def update_plan_node(
         ),
         "evaluation": None,
         "current_evidence": None,
+        "current_verification": None,
         "selected_evidence": selected_history,
+        "selected_verifications": selected_verifications,
         "route": WorkflowRoute.CONTINUE,
     }
 
@@ -632,6 +779,7 @@ def build_shopping_workflow(
     planner: Any | None = None,
     *,
     evidence_service: Any,
+    verification_service: Any,
 ):
     """Build and compile the P0 graph using injected runtime dependencies."""
 
@@ -646,6 +794,8 @@ def build_shopping_workflow(
         raise TypeError("planner must provide decide().")
     if evidence_service is None or not callable(getattr(evidence_service, "retrieve", None)):
         raise TypeError("evidence_service must provide retrieve().")
+    if verification_service is None or not callable(getattr(verification_service, "verify", None)):
+        raise TypeError("verification_service must provide verify().")
 
     graph = StateGraph(ShoppingWorkflowState)
     requirement_node = "requirement_planner" if planner is not None else "select_requirement"
@@ -669,6 +819,10 @@ def build_shopping_workflow(
     graph.add_node(
         "retrieve_evidence",
         _bound_node(retrieve_evidence_node, evidence_service=evidence_service),
+    )
+    graph.add_node(
+        "verify_constraints",
+        _bound_node(verify_constraints_node, verification_service=verification_service),
     )
     graph.add_node(
         "update_plan",
@@ -704,7 +858,16 @@ def build_shopping_workflow(
         "retrieve_evidence",
         _route,
         {
+            WorkflowRoute.CONTINUE.value: "verify_constraints",
+            WorkflowRoute.ERROR.value: END,
+        },
+    )
+    graph.add_conditional_edges(
+        "verify_constraints",
+        _route,
+        {
             WorkflowRoute.CONTINUE.value: candidate_node,
+            WorkflowRoute.CONFLICT.value: "conflict",
             WorkflowRoute.ERROR.value: END,
         },
     )
