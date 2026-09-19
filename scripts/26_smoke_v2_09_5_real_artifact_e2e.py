@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
-import re
 import subprocess
 import sys
 import time
@@ -76,12 +75,34 @@ USER_ID = "AEFKF6R2GUSK2AWPSWRR4ZO36JVQ"
 REQUIREMENT_ID = "dock-hub"
 MAX_PRICE = 500.0
 FEATURE_SETS = (("HDMI", "USB-C"), ("HDMI",), ("USB-C",))
-MAX_CATEGORY_ATTEMPTS = 24
-MAX_PHASE_B_CASES = 6
+PRIORITY_CATEGORIES = tuple(sorted((
+    "Accessories",
+    "Cables & Accessories",
+    "Computer Accessories & Peripherals",
+    "Computer Cable Adapters",
+    "Computer Components",
+    "Computers & Accessories",
+    "Computers & Tablets",
+    "DVI-HDMI Adapters",
+    "HDMI Cables",
+    "Hubs",
+    "Laptop Accessories",
+    "Single Board Computers",
+    "Television & Video",
+    "USB Cables",
+    "USB Hubs",
+    "USB-to-USB Adapters",
+    "USB-to-VGA Adapters",
+)))
+MAX_CATEGORY_ATTEMPTS = len(PRIORITY_CATEGORIES)
+MAX_PHASE_A_CASES = MAX_CATEGORY_ATTEMPTS * len(FEATURE_SETS)
+MAX_PHASE_B_CASES = 18
 TOP_K_INITIAL = 5
 TOP_K_EXPANDED = 10
 DISCOVERY_PLAN_ID = "v2-09-5-read-only-discovery"
-CATEGORY_PATTERN = re.compile(r"(?<![a-z0-9])(?:dock|hubs?)(?![a-z0-9])", re.I)
+MAX_PHASE_B_CANDIDATE_RETRIEVALS = (
+    MAX_PHASE_B_CASES * TOP_K_INITIAL + TOP_K_EXPANDED
+)
 
 
 def section(title: str) -> None:
@@ -335,11 +356,9 @@ class RecordingShoppingPlanService:
 
 
 def discover_categories(catalog_path: Path) -> tuple[str, ...]:
-    """Read real category members; do not reproduce catalog matching semantics."""
+    """Confirm the audited priority pool exists in the formal Product Catalog."""
 
-    # Collapse whitespace/case variants deterministically while preserving one
-    # exact catalog spelling for the real RecommendationService call.
-    values: dict[str, str] = {}
+    values: set[str] = set()
     with catalog_path.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, 1):
             try:
@@ -352,12 +371,16 @@ def discover_categories(catalog_path: Path) -> tuple[str, ...]:
             for raw in categories:
                 if isinstance(raw, str):
                     category = " ".join(raw.split())
-                    if category and CATEGORY_PATTERN.search(category):
-                        normalized = category.casefold()
-                        previous = values.get(normalized)
-                        if previous is None or category < previous:
-                            values[normalized] = category
-    return tuple(sorted(values.values(), key=lambda value: (value.casefold(), value)))
+                    if category:
+                        values.add(category)
+    missing = tuple(value for value in PRIORITY_CATEGORIES if value not in values)
+    if missing:
+        raise ValueError(
+            "The audited structured-eligible category pool differs from the "
+            f"formal Product Catalog; missing={missing!r}."
+        )
+    # Runtime Recommendation calls remain the authority for Phase A viability.
+    return PRIORITY_CATEGORIES
 
 
 def requirement(category: str, features: tuple[str, ...]) -> ShoppingRequirement:
@@ -420,8 +443,10 @@ def perform_discovery(
     shortlist: list[dict[str, Any]] = []
     phase_a_cases = 0
     phase_a_calls = 0
-    for category in categories:
-        for features in FEATURE_SETS:
+    # Feature-major ordering gives every category a dual-feature opportunity
+    # before single-feature cases enter the bounded Phase B queue.
+    for features in FEATURE_SETS:
+        for category in categories:
             phase_a_cases += 1
             top5 = tool_call(recommendation_tool, category, features, TOP_K_INITIAL)
             top10 = tool_call(recommendation_tool, category, features, TOP_K_EXPANDED)
@@ -445,72 +470,93 @@ def perform_discovery(
                     "category": category, "features": features,
                     "top5": top5, "top10": top10,
                 })
-            if len(shortlist) >= MAX_PHASE_B_CASES:
-                break
-        if len(shortlist) >= MAX_PHASE_B_CASES:
-            break
+    if phase_a_cases > MAX_PHASE_A_CASES:
+        raise RuntimeError("Phase A exceeded its fail-closed case bound.")
     phase_a_ms = milliseconds(phase_a_started)
 
     phase_b_started = now()
     success = None
     exhaustion = None
-    phase_b_cases = 0
-    candidate_retrieval_calls = 0
-    evidence_ms = 0.0
-    verification_ms = 0.0
+    phase_b_top5_cases = 0
+    phase_b_top10_cases = 0
+    phase_b_top5_candidate_retrieval_calls = 0
+    phase_b_top10_candidate_retrieval_calls = 0
+    top5_evidence_ms = 0.0
+    top5_verification_ms = 0.0
+    top10_evidence_ms = 0.0
+    top10_verification_ms = 0.0
     for case in shortlist[:MAX_PHASE_B_CASES]:
-        phase_b_cases += 1
-        ev_started = now()
-        evidence, verification = phase_b_probe(
+        phase_b_top5_cases += 1
+        evidence5, verification5 = phase_b_probe(
+            evidence_service, verifier, case["category"],
+            case["features"], case["top5"],
+        )
+        phase_b_top5_candidate_retrieval_calls += case["top5"].returned_count
+        top5_evidence_ms += evidence_service.records[-1]["duration_ms"]
+        top5_verification_ms += verifier.records[-1]["duration_ms"]
+        first_eligible = eligible_identities(verification5)
+        print(
+            f"phase_b_top5_case={phase_b_top5_cases} "
+            f"category={case['category']!r} features={case['features']!r} "
+            f"eligible={first_eligible}"
+        )
+        if first_eligible:
+            # This case cannot trigger the frozen zero-eligible re-plan route.
+            continue
+
+        phase_b_top10_cases += 1
+        evidence10, verification10 = phase_b_probe(
             evidence_service, verifier, case["category"],
             case["features"], case["top10"],
         )
-        # GroundedEvidenceService performs one restricted retrieval per candidate.
-        candidate_retrieval_calls += case["top10"].returned_count
-        combined_ms = milliseconds(ev_started)
-        # Wrapper records give the exact split; direct services may not expose it.
-        if getattr(evidence_service, "records", None):
-            evidence_ms += evidence_service.records[-1]["duration_ms"]
-        if getattr(verifier, "records", None):
-            verification_ms += verifier.records[-1]["duration_ms"]
-        if not getattr(evidence_service, "records", None):
-            evidence_ms += combined_ms
-        first_count = case["top5"].returned_count
-        first = verification.candidates[:first_count]
-        all_candidates = verification.candidates
-        first_eligible = tuple(
-            identity(value) for value in first
-            if value.status is CandidateVerificationStatus.ELIGIBLE
-        )
-        all_eligible = eligible_identities(verification)
+        phase_b_top10_candidate_retrieval_calls += case["top10"].returned_count
+        top10_evidence_ms += evidence_service.records[-1]["duration_ms"]
+        top10_verification_ms += verifier.records[-1]["duration_ms"]
+        all_eligible = eligible_identities(verification10)
         new_ids = set(candidate_identities(case["top10"])) - set(
             candidate_identities(case["top5"])
         )
         new_eligible = tuple(value for value in all_eligible if value in new_ids)
         case.update({
-            "evidence": evidence, "verification": verification,
+            "top5_evidence": evidence5, "top5_verification": verification5,
+            "top10_evidence": evidence10, "top10_verification": verification10,
             "first_eligible": first_eligible, "all_eligible": all_eligible,
             "new_ids": new_ids, "new_eligible": new_eligible,
         })
         print(
-            f"phase_b_case={phase_b_cases} category={case['category']!r} "
-            f"features={case['features']!r} top5_eligible={first_eligible} "
+            f"phase_b_top10_case={phase_b_top10_cases} "
+            f"category={case['category']!r} features={case['features']!r} "
+            f"top5_eligible={first_eligible} "
             f"top10_eligible={all_eligible} new_eligible={new_eligible}"
         )
-        if not first_eligible and new_eligible:
+        if new_eligible:
             success = case
             break
-        if not first_eligible and not all_eligible and exhaustion is None:
+        if not all_eligible:
             exhaustion = case
+            break
     phase_b_ms = milliseconds(phase_b_started)
+    total_candidate_retrieval_calls = (
+        phase_b_top5_candidate_retrieval_calls
+        + phase_b_top10_candidate_retrieval_calls
+    )
+    if total_candidate_retrieval_calls > MAX_PHASE_B_CANDIDATE_RETRIEVALS:
+        raise RuntimeError("Phase B exceeded its fail-closed retrieval-call bound.")
     return {
         "categories": categories, "phase_a_cases": phase_a_cases,
         "phase_a_calls": phase_a_calls, "shortlist_count": len(shortlist),
-        "phase_b_cases": phase_b_cases,
-        "candidate_retrieval_calls": candidate_retrieval_calls,
+        "phase_b_top5_cases": phase_b_top5_cases,
+        "phase_b_top10_cases": phase_b_top10_cases,
+        "phase_b_top5_candidate_retrieval_calls": phase_b_top5_candidate_retrieval_calls,
+        "phase_b_top10_candidate_retrieval_calls": phase_b_top10_candidate_retrieval_calls,
+        "total_phase_b_candidate_retrieval_calls": total_candidate_retrieval_calls,
         "category_ms": category_ms, "phase_a_ms": phase_a_ms,
-        "phase_b_ms": phase_b_ms, "evidence_ms": evidence_ms,
-        "verification_ms": verification_ms, "total_ms": milliseconds(started),
+        "phase_b_ms": phase_b_ms,
+        "top5_evidence_ms": top5_evidence_ms,
+        "top5_verification_ms": top5_verification_ms,
+        "top10_evidence_ms": top10_evidence_ms,
+        "top10_verification_ms": top10_verification_ms,
+        "total_ms": milliseconds(started),
         "mode": "success" if success is not None else "exhaustion" if exhaustion is not None else "inconclusive",
         "case": success if success is not None else exhaustion,
     }
@@ -643,7 +689,11 @@ def check_formal(run: dict[str, Any], mode: str) -> dict[str, bool]:
             and args0.required_features == args1.required_features
         ),
         "attempt0_nonempty_zero_eligible": bool(ids0) and not eligible0,
-        "expanded_candidate_set": bool(new_ids),
+        "expanded_candidate_set": (
+            bool(new_ids)
+            and ids0 == ids1[:len(ids0)]
+            and len(set(ids1)) == len(ids1)
+        ),
         "attempt0_integrity": attempt_integrity(recs[0], evs[0], vers[0]),
         "attempt1_integrity": attempt_integrity(recs[1], evs[1], vers[1]),
         "fresh_evidence_calls": evs[0]["result"] is not evs[1]["result"],
@@ -671,6 +721,13 @@ def check_formal(run: dict[str, Any], mode: str) -> dict[str, bool]:
         and directive0.action is ReplanAction.EXPAND_CANDIDATE_POOL
         and directive0.previous_top_k == 5
         and directive0.next_top_k == 10
+    )
+    checks["attempt_0_to_1_binding"] = bool(
+        diagnosis0
+        and diagnosis0.attempt == 0
+        and directive0
+        and directive0.attempt == 1
+        and final.replan_attempt == 1
     )
     checks["pre_mutation_version_stable"] = bool(
         all(value["plan_version"] == 0 for value in evs)
@@ -712,7 +769,10 @@ def check_formal(run: dict[str, Any], mode: str) -> dict[str, bool]:
                 and final.current_replan_directive is None
             ),
             "attempt0_history_retained": (
-                len(final.failure_history) == 1 and len(final.replan_history) == 1
+                len(final.failure_history) == 1
+                and len(final.replan_history) == 1
+                and final.failure_history[0] == diagnosis0
+                and final.replan_history[0] == directive0
             ),
             "selected_only_provenance": (
                 len(final.selected_evidence) == 1
@@ -739,6 +799,12 @@ def check_formal(run: dict[str, Any], mode: str) -> dict[str, bool]:
                 and directive1.next_top_k is None
             ),
             "diagnosis_policy_counts": len(diagnoses) == 2 and len(policies) == 2,
+            "bounded_history_retained": (
+                len(final.failure_history) == 2
+                and len(final.replan_history) == 2
+                and tuple(value.attempt for value in final.failure_history) == (0, 1)
+                and tuple(value.attempt for value in final.replan_history) == (1, 1)
+            ),
             "no_mutation": not mutations,
             "version_unchanged": final.agent_state.shopping_plan.version == 0,
             "selected_items_empty": not final.agent_state.shopping_plan.selected_items,
@@ -865,18 +931,42 @@ def main() -> int:
         evidence_service=discovery_evidence, verifier=discovery_verifier,
     )
     print(f"categories_considered={len(discovery['categories'])}")
+    print(f"category_order={discovery['categories']!r}")
     print(f"phase_a_cases_tested={discovery['phase_a_cases']}")
     print(f"phase_a_recommendation_calls={discovery['phase_a_calls']}")
-    print(f"phase_b_cases_tested={discovery['phase_b_cases']}")
-    print(f"phase_b_candidate_retrieval_calls={discovery['candidate_retrieval_calls']}")
+    print(f"phase_a_shortlist_count={discovery['shortlist_count']}")
+    print(f"phase_b_top5_cases={discovery['phase_b_top5_cases']}")
+    print(f"phase_b_top10_cases={discovery['phase_b_top10_cases']}")
+    print(f"phase_b_top5_evidence_calls={discovery['phase_b_top5_cases']}")
+    print(f"phase_b_top10_evidence_calls={discovery['phase_b_top10_cases']}")
+    print(
+        "total_phase_b_evidence_calls="
+        f"{discovery['phase_b_top5_cases'] + discovery['phase_b_top10_cases']}"
+    )
+    print(
+        "phase_b_top5_candidate_retrieval_calls="
+        f"{discovery['phase_b_top5_candidate_retrieval_calls']}"
+    )
+    print(
+        "phase_b_top10_candidate_retrieval_calls="
+        f"{discovery['phase_b_top10_candidate_retrieval_calls']}"
+    )
+    print(
+        "total_phase_b_candidate_retrieval_calls="
+        f"{discovery['total_phase_b_candidate_retrieval_calls']}"
+    )
+    print(f"phase_b_retrieval_call_hard_bound={MAX_PHASE_B_CANDIDATE_RETRIEVALS}")
     print(f"category_discovery_ms={discovery['category_ms']:.3f}")
     print(f"phase_a_ms={discovery['phase_a_ms']:.3f}")
-    print(f"phase_b_evidence_ms={discovery['evidence_ms']:.3f}")
-    print(f"phase_b_verification_ms={discovery['verification_ms']:.3f}")
+    print(f"phase_b_top5_evidence_ms={discovery['top5_evidence_ms']:.3f}")
+    print(f"phase_b_top5_verification_ms={discovery['top5_verification_ms']:.3f}")
+    print(f"phase_b_top10_evidence_ms={discovery['top10_evidence_ms']:.3f}")
+    print(f"phase_b_top10_verification_ms={discovery['top10_verification_ms']:.3f}")
     print(f"phase_b_total_ms={discovery['phase_b_ms']:.3f}")
     print(f"discovery_total_ms={discovery['total_ms']:.3f}")
     if discovery["mode"] == "inconclusive":
         print("\nREAL REPLAN SUCCESS CASE NOT FOUND WITHIN BOUNDED DISCOVERY")
+        print("REAL REPLAN EXHAUSTION CASE NOT FOUND WITHIN BOUNDED DISCOVERY")
         print("DISCOVERY INCONCLUSIVE")
         return 2
     if discovery["mode"] == "exhaustion":
