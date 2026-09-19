@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..domain import AgentState
 from ..evidence import RequirementEvidence, SelectedProductEvidence
 from ..planning import PlannerDecision
+from ..replanning import FailureDiagnosis, ReplanDirective
 from ..services import PlanEvaluation
 from ..tools import RecommendationToolArgs, RecommendationToolResult
 from ..verification import RequirementVerification, SelectedCandidateVerification
@@ -28,6 +31,15 @@ class ShoppingWorkflowState(BaseModel):
     selected_evidence: tuple[SelectedProductEvidence, ...] = ()
     current_verification: RequirementVerification | None = None
     selected_verifications: tuple[SelectedCandidateVerification, ...] = ()
+    recommendation_top_k: Annotated[int, Field(strict=True, ge=1, le=50)] = 5
+    replan_attempt: Annotated[int, Field(strict=True, ge=0, le=1)] = 0
+    max_replan_attempts: Annotated[int, Field(strict=True, ge=1, le=1)] = 1
+    current_failure_diagnosis: FailureDiagnosis | None = None
+    current_replan_directive: ReplanDirective | None = None
+    failure_history: tuple[FailureDiagnosis, ...] = ()
+    replan_history: tuple[ReplanDirective, ...] = ()
+    current_evidence_attempt: Annotated[int, Field(strict=True, ge=0, le=1)] | None = None
+    current_verification_attempt: Annotated[int, Field(strict=True, ge=0, le=1)] | None = None
     route: WorkflowRoute | None = None
 
     @model_validator(mode="after")
@@ -50,6 +62,10 @@ class ShoppingWorkflowState(BaseModel):
                 != self.agent_state.current_requirement_id
             ):
                 raise ValueError("current_evidence must match the current pre-mutation plan state.")
+            if self.current_evidence_attempt != self.replan_attempt:
+                raise ValueError("current_evidence attempt must match replan_attempt.")
+        elif self.current_evidence_attempt is not None:
+            raise ValueError("current_evidence_attempt requires current_evidence.")
         if any(
             value.plan_id != plan.plan_id
             or value.selected_at_plan_version > plan.version
@@ -71,6 +87,13 @@ class ShoppingWorkflowState(BaseModel):
                 != self.current_evidence.retrieved_at_plan_version
             ):
                 raise ValueError("current_verification must match current evidence and plan.")
+            if (
+                self.current_verification_attempt != self.replan_attempt
+                or self.current_verification_attempt != self.current_evidence_attempt
+            ):
+                raise ValueError("current_verification attempt must match current evidence.")
+        elif self.current_verification_attempt is not None:
+            raise ValueError("current_verification_attempt requires current_verification.")
         if any(
             value.plan_id != plan.plan_id or value.selected_at_plan_version > plan.version
             for value in self.selected_verifications
@@ -80,4 +103,20 @@ class ShoppingWorkflowState(BaseModel):
             self.selected_verifications
         ):
             raise ValueError("selected_verifications may contain one snapshot per requirement.")
+        if self.current_failure_diagnosis is not None and (
+            self.current_failure_diagnosis.plan_id != plan.plan_id
+            or self.current_failure_diagnosis.diagnosed_at_plan_version != plan.version
+            or self.current_failure_diagnosis.requirement_id
+            != self.agent_state.current_requirement_id
+        ):
+            raise ValueError("current_failure_diagnosis is stale or identity-mismatched.")
+        if self.current_replan_directive is not None and (
+            self.current_replan_directive.plan_id != plan.plan_id
+            or self.current_replan_directive.source_plan_version != plan.version
+            or self.current_replan_directive.requirement_id
+            != self.agent_state.current_requirement_id
+            or self.current_replan_directive.attempt
+            not in {self.replan_attempt, self.replan_attempt + 1}
+        ):
+            raise ValueError("current_replan_directive is stale or identity-mismatched.")
         return self

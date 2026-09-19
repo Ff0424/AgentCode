@@ -83,15 +83,18 @@ class VerifiedWorkflowTests(unittest.TestCase):
         self.assertEqual(selected.candidate.parent_asin, "P-2")
         self.assertEqual(selected.selected_at_plan_version, selected.candidate.verified_at_plan_version + 1)
 
-    def test_zero_eligible_is_conflict_without_mutation(self):
+    def test_zero_eligible_retries_once_then_conflicts_without_mutation(self):
         evidence = MappedEvidenceService({
             "P-1": ("Supports DisplayPort",), "P-2": ("No HDMI port",),
             "P-3": ("HDMI may be considered",),
         })
         final = ShoppingWorkflowState.model_validate(graph(evidence, EvidenceConstraintVerifier()).invoke(state()))
         self.assertEqual(final.route, WorkflowRoute.CONFLICT)
-        self.assertEqual(final.agent_state.error_state, "constraint_verification:no_eligible_candidates")
+        self.assertEqual(final.agent_state.error_state, "constraint_verification:replan_attempts_exhausted")
         self.assertEqual(final.agent_state.shopping_plan.version, 0)
+        self.assertEqual(final.replan_attempt, 1)
+        self.assertEqual(len(final.failure_history), 2)
+        self.assertEqual(len(final.replan_history), 2)
 
     def test_planner_cannot_select_unverified_or_ineligible(self):
         evidence = MappedEvidenceService({

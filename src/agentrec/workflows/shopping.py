@@ -2,8 +2,9 @@
 
 The graph sequences trusted recommendation-tool output into immutable Shopping
 Plan mutations. Runtime dependencies are captured by node closures and never
-stored in serializable workflow state. P0 intentionally contains no LLM,
-natural-language parsing, automatic replanning, persistence, or API behavior.
+stored in serializable workflow state. Its only automatic re-plan is the
+bounded deterministic 5-to-10 candidate-pool expansion after zero eligible
+candidates; it does not relax requirements or mutate the plan before success.
 """
 
 from __future__ import annotations
@@ -25,6 +26,11 @@ from ..planning import (
     SelectRequirementDecision,
     validate_planner_decision,
 )
+from ..replanning import (
+    BoundedReplanPolicy,
+    FailureDiagnosisService,
+    ReplanAction,
+)
 from ..services import ShoppingPlanServiceError
 from ..tools import RecommendationToolArgs
 from ..verification import (
@@ -37,6 +43,7 @@ from .state import ShoppingWorkflowState
 
 
 TOP_K = 5
+REPLAN_TOP_K = 10
 SELECTED_REASON = "selected_by_rank_policy"
 
 
@@ -117,6 +124,12 @@ def select_requirement_node(
         "planner_decision": None,
         "current_evidence": None,
         "current_verification": None,
+        "current_evidence_attempt": None,
+        "current_verification_attempt": None,
+        "recommendation_top_k": TOP_K,
+        "replan_attempt": 0,
+        "current_failure_diagnosis": None,
+        "current_replan_directive": None,
         "route": route,
     }
 
@@ -194,6 +207,12 @@ def requirement_planner_node(
         "planner_decision": decision,
         "current_evidence": None,
         "current_verification": None,
+        "current_evidence_attempt": None,
+        "current_verification_attempt": None,
+        "recommendation_top_k": TOP_K,
+        "replan_attempt": 0,
+        "current_failure_diagnosis": None,
+        "current_replan_directive": None,
         "route": WorkflowRoute.CONTINUE,
     }
 
@@ -208,7 +227,7 @@ def recommend_node(
     state = _state(value)
     requirement = _current_requirement(state)
     args = RecommendationToolArgs(
-        top_k=TOP_K,
+        top_k=state.recommendation_top_k,
         category=requirement.category,
         max_price=requirement.max_budget,
         required_features=requirement.required_features,
@@ -247,6 +266,8 @@ def recommend_node(
         "evaluation": None,
         "current_evidence": None,
         "current_verification": None,
+        "current_evidence_attempt": None,
+        "current_verification_attempt": None,
         "route": route,
     }
 
@@ -268,6 +289,8 @@ def _validate_current_evidence(
     plan = state.agent_state.shopping_plan
     if evidence is None:
         raise ValueError("Current requirement evidence is missing.")
+    if state.current_evidence_attempt != state.replan_attempt:
+        raise ValueError("Current requirement evidence belongs to another attempt.")
     if (
         evidence.plan_id != plan.plan_id
         or evidence.retrieved_at_plan_version != plan.version
@@ -317,6 +340,8 @@ def retrieve_evidence_node(
             ),
             "current_evidence": None,
             "current_verification": None,
+            "current_evidence_attempt": None,
+            "current_verification_attempt": None,
             "route": WorkflowRoute.ERROR,
         }
     return {
@@ -327,6 +352,8 @@ def retrieve_evidence_node(
         ),
         "current_evidence": evidence,
         "current_verification": None,
+        "current_evidence_attempt": state.replan_attempt,
+        "current_verification_attempt": None,
         "selected_parent_asin": None,
         "route": WorkflowRoute.CONTINUE,
     }
@@ -352,6 +379,7 @@ def verify_constraints_node(
                     error_state=None,
                 ),
                 "current_verification": None,
+                "current_verification_attempt": None,
                 "route": WorkflowRoute.CONTINUE,
             }
         verification = verification_service.verify(
@@ -379,11 +407,12 @@ def verify_constraints_node(
             return {
                 "agent_state": _agent_update(
                     state.agent_state,
-                    pending_action=WorkflowAction.CONFLICT.value,
+                    pending_action=WorkflowAction.DIAGNOSE_FAILURE.value,
                     error_state="constraint_verification:no_eligible_candidates",
                 ),
                 "current_verification": verification,
-                "route": WorkflowRoute.CONFLICT,
+                "current_verification_attempt": state.replan_attempt,
+                "route": WorkflowRoute.DIAGNOSE,
             }
     except Exception as exc:
         return {
@@ -393,6 +422,7 @@ def verify_constraints_node(
                 error_state=f"constraint_verification:{type(exc).__name__}",
             ),
             "current_verification": None,
+            "current_verification_attempt": None,
             "route": WorkflowRoute.ERROR,
         }
     return {
@@ -402,7 +432,164 @@ def verify_constraints_node(
             error_state=None,
         ),
         "current_verification": verification,
+        "current_verification_attempt": state.replan_attempt,
         "route": WorkflowRoute.CONTINUE,
+    }
+
+
+def diagnose_failure_node(
+    value: ShoppingWorkflowState | dict[str, Any],
+    *,
+    diagnosis_service: Any,
+) -> dict[str, Any]:
+    """Classify a zero-eligible result without changing ShoppingPlan."""
+
+    state = _state(value)
+    requirement = _current_requirement(state)
+    plan = state.agent_state.shopping_plan
+    verification = state.current_verification
+    result = state.last_tool_result
+    if (
+        result is None
+        or result.returned_count == 0
+        or verification is None
+        or state.current_evidence is None
+        or state.current_evidence_attempt != state.replan_attempt
+        or state.current_verification_attempt != state.replan_attempt
+    ):
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state="replan_diagnosis:invalid_or_stale_runtime_state",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
+    try:
+        diagnosis = diagnosis_service.diagnose_zero_eligible(
+            verification=verification,
+            plan_id=plan.plan_id,
+            requirement_id=requirement.requirement_id,
+            plan_version=plan.version,
+            attempt=state.replan_attempt,
+        )
+    except Exception as exc:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state=f"replan_diagnosis:{type(exc).__name__}",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
+    return {
+        "agent_state": _agent_update(
+            state.agent_state,
+            pending_action=WorkflowAction.REPLAN.value,
+            error_state=state.agent_state.error_state,
+        ),
+        "current_failure_diagnosis": diagnosis,
+        "failure_history": (*state.failure_history, diagnosis),
+        "route": WorkflowRoute.REPLAN,
+    }
+
+
+def replan_policy_node(
+    value: ShoppingWorkflowState | dict[str, Any],
+    *,
+    replan_policy: Any,
+) -> dict[str, Any]:
+    """Choose the closed 5-to-10 expansion or a terminal conflict."""
+
+    state = _state(value)
+    diagnosis = state.current_failure_diagnosis
+    if diagnosis is None:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state="replan_policy:diagnosis_missing",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
+    try:
+        directive = replan_policy.decide(
+            diagnosis=diagnosis,
+            requirement=_current_requirement(state),
+            current_top_k=state.recommendation_top_k,
+            current_attempt=state.replan_attempt,
+            max_replan_attempts=state.max_replan_attempts,
+        )
+    except Exception as exc:
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state=f"replan_policy:{type(exc).__name__}",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
+    retry = directive.action is ReplanAction.EXPAND_CANDIDATE_POOL
+    return {
+        "agent_state": _agent_update(
+            state.agent_state,
+            pending_action=(
+                WorkflowAction.RETRY_RECOMMENDATION.value
+                if retry else WorkflowAction.CONFLICT.value
+            ),
+            error_state=(
+                state.agent_state.error_state
+                if retry else "constraint_verification:replan_attempts_exhausted"
+            ),
+        ),
+        "current_replan_directive": directive,
+        "replan_history": (*state.replan_history, directive),
+        "route": WorkflowRoute.RETRY if retry else WorkflowRoute.CONFLICT,
+    }
+
+
+def reset_for_retry_node(
+    value: ShoppingWorkflowState | dict[str, Any],
+) -> dict[str, Any]:
+    """Clear attempt-local state before the one permitted recommendation retry."""
+
+    state = _state(value)
+    directive = state.current_replan_directive
+    plan = state.agent_state.shopping_plan
+    if (
+        directive is None
+        or directive.action is not ReplanAction.EXPAND_CANDIDATE_POOL
+        or directive.source_plan_version != plan.version
+        or directive.attempt != state.replan_attempt + 1
+        or directive.next_top_k != REPLAN_TOP_K
+    ):
+        return {
+            "agent_state": _agent_update(
+                state.agent_state,
+                pending_action=WorkflowAction.CONFLICT.value,
+                error_state="replan_reset:invalid_directive",
+            ),
+            "route": WorkflowRoute.ERROR,
+        }
+    return {
+        "agent_state": _agent_update(
+            state.agent_state,
+            last_tool_result=None,
+            pending_action=WorkflowAction.RETRY_RECOMMENDATION.value,
+            error_state=None,
+        ),
+        "recommendation_args": None,
+        "last_tool_result": None,
+        "selected_parent_asin": None,
+        "evaluation": None,
+        "planner_decision": None,
+        "current_evidence": None,
+        "current_verification": None,
+        "current_evidence_attempt": None,
+        "current_verification_attempt": None,
+        "recommendation_top_k": directive.next_top_k,
+        "replan_attempt": directive.attempt,
+        "route": WorkflowRoute.RETRY,
     }
 
 
@@ -423,6 +610,8 @@ def _eligible_parent_asins(state: ShoppingWorkflowState) -> tuple[str, ...]:
         verification.plan_id != plan.plan_id
         or verification.requirement_id != requirement.requirement_id
         or verification.verified_at_plan_version != plan.version
+        or state.current_verification_attempt != state.replan_attempt
+        or state.current_verification_attempt != state.current_evidence_attempt
     ):
         raise ValueError("Candidate verification is stale.")
     return verification.eligible_parent_asins
@@ -694,6 +883,10 @@ def update_plan_node(
         "evaluation": None,
         "current_evidence": None,
         "current_verification": None,
+        "current_evidence_attempt": None,
+        "current_verification_attempt": None,
+        "current_failure_diagnosis": None,
+        "current_replan_directive": None,
         "selected_evidence": selected_history,
         "selected_verifications": selected_verifications,
         "route": WorkflowRoute.CONTINUE,
@@ -780,8 +973,10 @@ def build_shopping_workflow(
     *,
     evidence_service: Any,
     verification_service: Any,
+    diagnosis_service: Any | None = None,
+    replan_policy: Any | None = None,
 ):
-    """Build and compile the P0 graph using injected runtime dependencies."""
+    """Build the shopping graph with one deterministic bounded re-plan."""
 
     if recommendation_tool is None or not callable(
         getattr(recommendation_tool, "recommend", None)
@@ -796,6 +991,12 @@ def build_shopping_workflow(
         raise TypeError("evidence_service must provide retrieve().")
     if verification_service is None or not callable(getattr(verification_service, "verify", None)):
         raise TypeError("verification_service must provide verify().")
+    diagnosis_service = diagnosis_service or FailureDiagnosisService()
+    replan_policy = replan_policy or BoundedReplanPolicy()
+    if not callable(getattr(diagnosis_service, "diagnose_zero_eligible", None)):
+        raise TypeError("diagnosis_service must provide diagnose_zero_eligible().")
+    if not callable(getattr(replan_policy, "decide", None)):
+        raise TypeError("replan_policy must provide decide().")
 
     graph = StateGraph(ShoppingWorkflowState)
     requirement_node = "requirement_planner" if planner is not None else "select_requirement"
@@ -824,6 +1025,15 @@ def build_shopping_workflow(
         "verify_constraints",
         _bound_node(verify_constraints_node, verification_service=verification_service),
     )
+    graph.add_node(
+        "diagnose_failure",
+        _bound_node(diagnose_failure_node, diagnosis_service=diagnosis_service),
+    )
+    graph.add_node(
+        "replan_policy",
+        _bound_node(replan_policy_node, replan_policy=replan_policy),
+    )
+    graph.add_node("reset_for_retry", reset_for_retry_node)
     graph.add_node(
         "update_plan",
         _bound_node(update_plan_node, shopping_plan_service=shopping_plan_service),
@@ -867,7 +1077,32 @@ def build_shopping_workflow(
         _route,
         {
             WorkflowRoute.CONTINUE.value: candidate_node,
+            WorkflowRoute.DIAGNOSE.value: "diagnose_failure",
+            WorkflowRoute.ERROR.value: END,
+        },
+    )
+    graph.add_conditional_edges(
+        "diagnose_failure",
+        _route,
+        {
+            WorkflowRoute.REPLAN.value: "replan_policy",
+            WorkflowRoute.ERROR.value: END,
+        },
+    )
+    graph.add_conditional_edges(
+        "replan_policy",
+        _route,
+        {
+            WorkflowRoute.RETRY.value: "reset_for_retry",
             WorkflowRoute.CONFLICT.value: "conflict",
+            WorkflowRoute.ERROR.value: END,
+        },
+    )
+    graph.add_conditional_edges(
+        "reset_for_retry",
+        _route,
+        {
+            WorkflowRoute.RETRY.value: "recommend",
             WorkflowRoute.ERROR.value: END,
         },
     )
