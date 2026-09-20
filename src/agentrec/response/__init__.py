@@ -15,6 +15,7 @@ from .contracts import (
     ResponseKind,
     VerifiedConstraintClaim,
 )
+from .renderer import DeterministicFinalResponseRenderer
 
 if TYPE_CHECKING:
     from .projector import (
@@ -44,6 +45,7 @@ __all__ = [
     "ConflictDecisionSummary",
     "ConflictReason",
     "ConflictResponseContext",
+    "DeterministicFinalResponseRenderer",
     "EvidenceReference",
     "FinalResponseResult",
     "GroundedResponseContext",

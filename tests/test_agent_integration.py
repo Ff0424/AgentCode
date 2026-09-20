@@ -84,6 +84,8 @@ class AgentIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(result.status, AgentExecutionStatus.READY)
         self.assertEqual(result.workflow_state.agent_state.shopping_plan.total_spent, 180)
+        self.assertIsNotNone(result.final_response)
+        self.assertIsNone(result.response_error)
 
     def test_multiple_requirement_success(self) -> None:
         names = tuple(REQUESTS)
@@ -115,6 +117,8 @@ class AgentIntegrationTests(unittest.TestCase):
         self.assertEqual(result.status, AgentExecutionStatus.CLARIFICATION_REQUIRED)
         self.assertEqual(result.clarification_requirement_ids, ("headphones",))
         self.assertIsNone(result.workflow_state)
+        self.assertIsNone(result.final_response)
+        self.assertIsNone(result.response_error)
 
     def test_empty_recommendation_is_conflict(self) -> None:
         service = runner(

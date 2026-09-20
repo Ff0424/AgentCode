@@ -15,6 +15,12 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ..domain import AgentState
 from ..planning import RequirementExtractionDecision
+from ..response import (
+    DeterministicFinalResponseRenderer,
+    FinalResponseResult,
+    GroundedResponseProjector,
+    ResponseErrorCode,
+)
 from ..services import ShoppingPlanService
 from ..workflows import ShoppingWorkflowState, WorkflowRoute, build_shopping_workflow
 
@@ -47,6 +53,8 @@ class AgentExecutionResult(BaseModel):
     extraction_decisions: tuple[RequirementExtractionDecision, ...]
     clarification_requirement_ids: tuple[str, ...] = ()
     workflow_state: ShoppingWorkflowState | None = None
+    final_response: FinalResponseResult | None = None
+    response_error: ResponseErrorCode | None = None
 
 
 class AgentTaskRunner:
@@ -61,6 +69,8 @@ class AgentTaskRunner:
         evidence_service: Any,
         verification_service: Any,
         shopping_plan_service: ShoppingPlanService,
+        response_projector: Any | None = None,
+        response_renderer: Any | None = None,
     ) -> None:
         dependencies = (
             (requirement_extractor, "extract", "requirement_extractor"),
@@ -79,6 +89,20 @@ class AgentTaskRunner:
         self._evidence_service = evidence_service
         self._verification_service = verification_service
         self._plan_service = shopping_plan_service
+        self._response_projector = (
+            GroundedResponseProjector()
+            if response_projector is None
+            else response_projector
+        )
+        self._response_renderer = (
+            DeterministicFinalResponseRenderer()
+            if response_renderer is None
+            else response_renderer
+        )
+        if not callable(getattr(self._response_projector, "project", None)):
+            raise TypeError("response_projector must provide project().")
+        if not callable(getattr(self._response_renderer, "render", None)):
+            raise TypeError("response_renderer must provide render().")
 
     def run(
         self,
@@ -149,8 +173,26 @@ class AgentTaskRunner:
         }.get(output.route)
         if status is None:
             raise RuntimeError(f"Workflow ended with invalid route={output.route!r}.")
+
+        final_response: FinalResponseResult | None = None
+        response_error: ResponseErrorCode | None = None
+        if status in (AgentExecutionStatus.READY, AgentExecutionStatus.CONFLICT):
+            try:
+                response_context = self._response_projector.project(output)
+            except Exception:
+                # Internal projection details must not cross the integration boundary.
+                response_error = ResponseErrorCode.PROJECTION_FAILED
+            else:
+                try:
+                    final_response = self._response_renderer.render(response_context)
+                except Exception:
+                    # Preserve the successful workflow result while reporting a safe code.
+                    response_error = ResponseErrorCode.RENDER_FAILED
+
         return AgentExecutionResult(
             status=status,
             extraction_decisions=decisions,
             workflow_state=output,
+            final_response=final_response,
+            response_error=response_error,
         )
