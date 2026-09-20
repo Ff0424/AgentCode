@@ -6,9 +6,11 @@ from .contracts import (
     PreferenceStatus,
     PreferenceType,
 )
+from .store import MemoryStore
 
 __all__ = [
     "MemoryScope",
+    "MemoryStore",
     "PreferenceItem",
     "PreferenceStatus",
     "PreferenceType",
