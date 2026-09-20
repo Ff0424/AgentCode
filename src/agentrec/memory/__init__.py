@@ -7,6 +7,7 @@ from .contracts import (
     PreferenceType,
 )
 from .store import MemoryStore
+from .merge import RequirementMemoryMerger
 
 __all__ = [
     "MemoryScope",
@@ -14,4 +15,5 @@ __all__ = [
     "PreferenceItem",
     "PreferenceStatus",
     "PreferenceType",
+    "RequirementMemoryMerger",
 ]
