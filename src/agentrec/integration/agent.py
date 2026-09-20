@@ -14,6 +14,7 @@ from typing import Annotated, Any
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from ..domain import AgentState
+from ..memory import MemoryStore, RequirementMemoryMerger
 from ..planning import RequirementExtractionDecision
 from ..response import (
     DeterministicFinalResponseRenderer,
@@ -55,6 +56,7 @@ class AgentExecutionResult(BaseModel):
     workflow_state: ShoppingWorkflowState | None = None
     final_response: FinalResponseResult | None = None
     response_error: ResponseErrorCode | None = None
+    memory_error: str | None = None
 
 
 class AgentTaskRunner:
@@ -71,6 +73,8 @@ class AgentTaskRunner:
         shopping_plan_service: ShoppingPlanService,
         response_projector: Any | None = None,
         response_renderer: Any | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_merger: RequirementMemoryMerger | None = None,
     ) -> None:
         dependencies = (
             (requirement_extractor, "extract", "requirement_extractor"),
@@ -103,6 +107,22 @@ class AgentTaskRunner:
             raise TypeError("response_projector must provide project().")
         if not callable(getattr(self._response_renderer, "render", None)):
             raise TypeError("response_renderer must provide render().")
+        if (memory_store is None) != (memory_merger is None):
+            raise TypeError(
+                "memory_store and memory_merger must be provided together."
+            )
+        if memory_store is not None and not callable(
+            getattr(memory_store, "get_confirmed_preferences", None)
+        ):
+            raise TypeError(
+                "memory_store must provide get_confirmed_preferences()."
+            )
+        if memory_merger is not None and not callable(
+            getattr(memory_merger, "merge", None)
+        ):
+            raise TypeError("memory_merger must provide merge().")
+        self._memory_store = memory_store
+        self._memory_merger = memory_merger
 
     def run(
         self,
@@ -142,6 +162,30 @@ class AgentTaskRunner:
             decision.to_shopping_requirement(requirement_id=request.requirement_id)
             for request, decision in zip(requirements, decisions, strict=True)
         )
+        memory_error: str | None = None
+        if self._memory_store is not None and self._memory_merger is not None:
+            try:
+                confirmed_preferences = (
+                    self._memory_store.get_confirmed_preferences(user_id)
+                )
+            except Exception:
+                # Memory is optional augmentation; never expose internal failures.
+                memory_error = "memory_store_failed"
+            else:
+                augmented_requirements = []
+                for requirement in domain_requirements:
+                    try:
+                        augmented = self._memory_merger.merge(
+                            requirement,
+                            confirmed_preferences,
+                        )
+                    except Exception:
+                        # Fail open per requirement and retain the extracted facts.
+                        memory_error = "memory_merge_failed"
+                        augmented = requirement
+                    augmented_requirements.append(augmented)
+                domain_requirements = tuple(augmented_requirements)
+
         plan = self._plan_service.create_plan(
             plan_id=plan_id,
             user_id=user_id,
@@ -195,4 +239,5 @@ class AgentTaskRunner:
             workflow_state=output,
             final_response=final_response,
             response_error=response_error,
+            memory_error=memory_error,
         )
