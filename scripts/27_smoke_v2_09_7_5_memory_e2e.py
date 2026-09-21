@@ -93,7 +93,7 @@ def main() -> int:
         "confirmed_memory_effective": "USB-C" in requirement.required_features,
         "production_merger_called": len(merger.calls) == 1,
         "workflow_state_has_no_memory_fields": {"memory", "preferences", "memory_error"}.isdisjoint(
-            result.workflow_state.model_fields
+            type(result.workflow_state).model_fields
         ),
         "normal_workflow_ready": result.status.value == "ready",
         "failure_isolated": (

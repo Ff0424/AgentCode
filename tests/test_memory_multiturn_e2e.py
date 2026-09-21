@@ -202,7 +202,7 @@ class MemoryMultiTurnE2ETests(unittest.TestCase):
         self.assertEqual(first.workflow_state, second.workflow_state)
         self.assertTrue(
             {"memory", "preferences", "memory_error"}.isdisjoint(
-                first.workflow_state.model_fields
+                type(first.workflow_state).model_fields
             )
         )
         public_text = first.final_response.text.casefold()
