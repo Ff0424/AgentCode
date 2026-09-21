@@ -13,6 +13,11 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from ..decision import (
+    AgentIntent,
+    DecisionContext,
+    DecisionExecutionPlan,
+)
 from ..domain import AgentState
 from ..memory import MemoryStore, RequirementMemoryMerger
 from ..planning import RequirementExtractionDecision
@@ -57,6 +62,7 @@ class AgentExecutionResult(BaseModel):
     final_response: FinalResponseResult | None = None
     response_error: ResponseErrorCode | None = None
     memory_error: str | None = None
+    decision_plan: DecisionExecutionPlan | None = None
 
 
 class AgentTaskRunner:
@@ -75,6 +81,8 @@ class AgentTaskRunner:
         response_renderer: Any | None = None,
         memory_store: MemoryStore | None = None,
         memory_merger: RequirementMemoryMerger | None = None,
+        decision_policy: Any | None = None,
+        decision_executor: Any | None = None,
     ) -> None:
         dependencies = (
             (requirement_extractor, "extract", "requirement_extractor"),
@@ -123,6 +131,20 @@ class AgentTaskRunner:
             raise TypeError("memory_merger must provide merge().")
         self._memory_store = memory_store
         self._memory_merger = memory_merger
+        if (decision_policy is None) != (decision_executor is None):
+            raise ValueError(
+                "decision_policy and decision_executor must be provided together."
+            )
+        if decision_policy is not None and not callable(
+            getattr(decision_policy, "decide", None)
+        ):
+            raise TypeError("decision_policy must provide decide().")
+        if decision_executor is not None and not callable(
+            getattr(decision_executor, "execute", None)
+        ):
+            raise TypeError("decision_executor must provide execute().")
+        self._decision_policy = decision_policy
+        self._decision_executor = decision_executor
 
     def run(
         self,
@@ -163,6 +185,7 @@ class AgentTaskRunner:
             for request, decision in zip(requirements, decisions, strict=True)
         )
         memory_error: str | None = None
+        confirmed_preferences = ()
         if self._memory_store is not None and self._memory_merger is not None:
             try:
                 confirmed_preferences = (
@@ -200,6 +223,23 @@ class AgentTaskRunner:
                 shopping_plan=plan,
             )
         )
+        decision_plan: DecisionExecutionPlan | None = None
+        if self._decision_policy is not None and self._decision_executor is not None:
+            decision_context = DecisionContext(
+                intent=AgentIntent.RECOMMENDATION,
+                memory_available=bool(confirmed_preferences),
+                requirement_complete=True,
+                candidate_available=False,
+                verification_required=True,
+                response_required=True,
+            )
+            try:
+                directive = self._decision_policy.decide(decision_context)
+                decision_plan = self._decision_executor.execute(directive)
+            except Exception:
+                # Decision metadata is optional and cannot alter workflow execution.
+                decision_plan = None
+
         graph = build_shopping_workflow(
             self._recommendation_tool,
             self._plan_service,
@@ -240,4 +280,5 @@ class AgentTaskRunner:
             final_response=final_response,
             response_error=response_error,
             memory_error=memory_error,
+            decision_plan=decision_plan,
         )
