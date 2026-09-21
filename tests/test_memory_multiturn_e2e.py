@@ -66,7 +66,7 @@ class FailingStore:
 
 def build_runner(
     *,
-    max_budget: float | None = None,
+    max_budget: float | None = 200,
     memory_store=None,
     memory_merger=None,
 ) -> AgentTaskRunner:
