@@ -16,6 +16,11 @@ from .goal_contracts import (
     GoalRequirementProposal,
     ShoppingGoalExtractionDecision,
 )
+from .goal_projection import (
+    GoalRequirementProjection,
+    GoalToRequirementProjector,
+    RequirementAllocationPreference,
+)
 from .planner import FakePlanner, Planner
 from .providers import (
     OpenAICompatiblePlannerProvider,
@@ -38,7 +43,9 @@ __all__ = [
     "FakePlanner",
     "FakeRequirementExtractor",
     "GoalAllocationPreference",
+    "GoalRequirementProjection",
     "GoalRequirementProposal",
+    "GoalToRequirementProjector",
     "Planner",
     "PlannerAction",
     "PlannerDecision",
@@ -50,6 +57,7 @@ __all__ = [
     "RequestRecommendationDecision",
     "RequestUserConfirmationDecision",
     "RequirementClarificationRequired",
+    "RequirementAllocationPreference",
     "RequirementExtractionDecision",
     "RequirementExtractor",
     "SelectCandidateDecision",
