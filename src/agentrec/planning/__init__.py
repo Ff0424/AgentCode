@@ -10,6 +10,12 @@ from .contracts import (
     SelectRequirementDecision,
     validate_planner_decision,
 )
+from .goal_contracts import (
+    AllocationPreferenceType,
+    GoalAllocationPreference,
+    GoalRequirementProposal,
+    ShoppingGoalExtractionDecision,
+)
 from .planner import FakePlanner, Planner
 from .providers import (
     OpenAICompatiblePlannerProvider,
@@ -28,8 +34,11 @@ from .requirement_extraction import (
 )
 
 __all__ = [
+    "AllocationPreferenceType",
     "FakePlanner",
     "FakeRequirementExtractor",
+    "GoalAllocationPreference",
+    "GoalRequirementProposal",
     "Planner",
     "PlannerAction",
     "PlannerDecision",
@@ -47,6 +56,7 @@ __all__ = [
     "SelectRequirementDecision",
     "StructuredLLMPlanner",
     "StructuredRequirementExtractor",
+    "ShoppingGoalExtractionDecision",
     "OpenAICompatiblePlannerProvider",
     "validate_planner_decision",
 ]
