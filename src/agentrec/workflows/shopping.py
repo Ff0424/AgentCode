@@ -40,6 +40,11 @@ from ..verification import (
 )
 from .routes import WorkflowAction, WorkflowRoute
 from .state import ShoppingWorkflowState
+from .budget import (
+    GoalAllocationExhaustedError,
+    GoalBudgetDerivationError,
+    derive_goal_recommendation_budget,
+)
 
 
 TOP_K = 5
@@ -118,6 +123,7 @@ def select_requirement_node(
     return {
         "agent_state": agent_state,
         "recommendation_args": None,
+        "current_recommendation_budget_provenance": None,
         "last_tool_result": None,
         "selected_parent_asin": None,
         "evaluation": None,
@@ -201,6 +207,7 @@ def requirement_planner_node(
             error_state=None,
         ),
         "recommendation_args": None,
+        "current_recommendation_budget_provenance": None,
         "last_tool_result": None,
         "selected_parent_asin": None,
         "evaluation": None,
@@ -226,10 +233,58 @@ def recommend_node(
 
     state = _state(value)
     requirement = _current_requirement(state)
+    provenance = None
+    max_price = requirement.max_budget
+    if state.goal_budget_allocation is not None:
+        try:
+            provenance = derive_goal_recommendation_budget(
+                plan=state.agent_state.shopping_plan,
+                requirement=requirement,
+                allocation=state.goal_budget_allocation,
+            )
+        except GoalAllocationExhaustedError:
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    last_tool_result=None,
+                    pending_action=WorkflowAction.CONFLICT.value,
+                    error_state="goal_budget:allocation_exhausted",
+                ),
+                "recommendation_args": None,
+                "last_tool_result": None,
+                "selected_parent_asin": None,
+                "evaluation": None,
+                "current_recommendation_budget_provenance": None,
+                "current_evidence": None,
+                "current_verification": None,
+                "current_evidence_attempt": None,
+                "current_verification_attempt": None,
+                "route": WorkflowRoute.CONFLICT,
+            }
+        except GoalBudgetDerivationError:
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    last_tool_result=None,
+                    pending_action=WorkflowAction.CONFLICT.value,
+                    error_state="goal_budget:invalid_context",
+                ),
+                "recommendation_args": None,
+                "last_tool_result": None,
+                "selected_parent_asin": None,
+                "evaluation": None,
+                "current_recommendation_budget_provenance": None,
+                "current_evidence": None,
+                "current_verification": None,
+                "current_evidence_attempt": None,
+                "current_verification_attempt": None,
+                "route": WorkflowRoute.ERROR,
+            }
+        max_price = provenance.derived_unit_max_price
     args = RecommendationToolArgs(
         top_k=state.recommendation_top_k,
         category=requirement.category,
-        max_price=requirement.max_budget,
+        max_price=max_price,
         required_features=requirement.required_features,
     )
     result = recommendation_tool.recommend(
@@ -261,6 +316,7 @@ def recommend_node(
     return {
         "agent_state": agent_state,
         "recommendation_args": args,
+        "current_recommendation_budget_provenance": provenance,
         "last_tool_result": result,
         "selected_parent_asin": None,
         "evaluation": None,
@@ -579,6 +635,7 @@ def reset_for_retry_node(
             error_state=None,
         ),
         "recommendation_args": None,
+        "current_recommendation_budget_provenance": None,
         "last_tool_result": None,
         "selected_parent_asin": None,
         "evaluation": None,
@@ -783,6 +840,29 @@ def update_plan_node(
             "route": WorkflowRoute.ERROR,
         }
     requirement = _current_requirement(state)
+    current_provenance = state.current_recommendation_budget_provenance
+    if state.goal_budget_allocation is not None:
+        if current_provenance is None:
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    pending_action=WorkflowAction.CONFLICT.value,
+                    error_state="goal_budget:missing_recommendation_provenance",
+                ),
+                "route": WorkflowRoute.ERROR,
+            }
+        if any(
+            value.requirement_id == requirement.requirement_id
+            for value in state.selected_recommendation_budget_provenance
+        ):
+            return {
+                "agent_state": _agent_update(
+                    state.agent_state,
+                    pending_action=WorkflowAction.CONFLICT.value,
+                    error_state="goal_budget:duplicate_selected_provenance",
+                ),
+                "route": WorkflowRoute.ERROR,
+            }
     already_selected = sum(
         item.quantity
         for item in state.agent_state.shopping_plan.selected_items
@@ -873,6 +953,20 @@ def update_plan_node(
             selected_at_plan_version=plan.version,
             candidate=matches[0],
         ),)
+    selected_budget_provenance = state.selected_recommendation_budget_provenance
+    if current_provenance is not None:
+        combined_budget_provenance = (
+            *selected_budget_provenance,
+            current_provenance,
+        )
+        plan_order = {
+            value.requirement_id: index
+            for index, value in enumerate(plan.requirements)
+        }
+        selected_budget_provenance = tuple(sorted(
+            combined_budget_provenance,
+            key=lambda value: plan_order[value.requirement_id],
+        ))
     return {
         "agent_state": _agent_update(
             state.agent_state,
@@ -887,6 +981,8 @@ def update_plan_node(
         "current_verification_attempt": None,
         "current_failure_diagnosis": None,
         "current_replan_directive": None,
+        "current_recommendation_budget_provenance": None,
+        "selected_recommendation_budget_provenance": selected_budget_provenance,
         "selected_evidence": selected_history,
         "selected_verifications": selected_verifications,
         "route": WorkflowRoute.CONTINUE,

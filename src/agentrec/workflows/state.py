@@ -15,6 +15,7 @@ from ..services import PlanEvaluation
 from ..tools import RecommendationToolArgs, RecommendationToolResult
 from ..verification import RequirementVerification, SelectedCandidateVerification
 from .routes import WorkflowRoute
+from .budget import RecommendationBudgetProvenance
 
 
 class ShoppingWorkflowState(BaseModel):
@@ -24,6 +25,10 @@ class ShoppingWorkflowState(BaseModel):
 
     agent_state: AgentState
     goal_budget_allocation: GoalBudgetAllocation | None = None
+    current_recommendation_budget_provenance: RecommendationBudgetProvenance | None = None
+    selected_recommendation_budget_provenance: tuple[
+        RecommendationBudgetProvenance, ...
+    ] = ()
     recommendation_args: RecommendationToolArgs | None = None
     last_tool_result: RecommendationToolResult | None = None
     selected_parent_asin: str | None = None
@@ -56,6 +61,47 @@ class ShoppingWorkflowState(BaseModel):
             ):
                 raise ValueError("evaluation must describe the current ShoppingPlan version.")
         plan = self.agent_state.shopping_plan
+        requirement_ids = tuple(value.requirement_id for value in plan.requirements)
+        selected_provenance_ids = tuple(
+            value.requirement_id
+            for value in self.selected_recommendation_budget_provenance
+        )
+        if len(set(selected_provenance_ids)) != len(selected_provenance_ids):
+            raise ValueError(
+                "selected recommendation budget provenance IDs must be unique."
+            )
+        if any(value not in set(requirement_ids) for value in selected_provenance_ids):
+            raise ValueError(
+                "selected recommendation budget provenance must reference plan requirements."
+            )
+        expected_selected_order = tuple(
+            value for value in requirement_ids if value in set(selected_provenance_ids)
+        )
+        if selected_provenance_ids != expected_selected_order:
+            raise ValueError(
+                "selected recommendation budget provenance must follow plan order."
+            )
+        if any(
+            value.plan_version_before_call > plan.version
+            for value in self.selected_recommendation_budget_provenance
+        ):
+            raise ValueError(
+                "selected recommendation budget provenance cannot be from a future plan version."
+            )
+        if self.current_recommendation_budget_provenance is not None:
+            current_id = self.current_recommendation_budget_provenance.requirement_id
+            if current_id not in set(requirement_ids):
+                raise ValueError(
+                    "current recommendation budget provenance must reference a plan requirement."
+                )
+            if current_id != self.agent_state.current_requirement_id:
+                raise ValueError(
+                    "current recommendation budget provenance must match current requirement."
+                )
+            if self.current_recommendation_budget_provenance.plan_version_before_call != plan.version:
+                raise ValueError(
+                    "current recommendation budget provenance must match current plan version."
+                )
         if self.goal_budget_allocation is not None:
             plan_ids = tuple(
                 value.requirement_id for value in plan.requirements
@@ -79,6 +125,13 @@ class ShoppingWorkflowState(BaseModel):
                 raise ValueError(
                     "goal_budget_allocation total budget must match ShoppingPlan."
                 )
+        elif (
+            self.current_recommendation_budget_provenance is not None
+            or self.selected_recommendation_budget_provenance
+        ):
+            raise ValueError(
+                "recommendation budget provenance requires goal_budget_allocation."
+            )
         if self.current_evidence is not None:
             if (
                 self.current_evidence.plan_id != plan.plan_id
