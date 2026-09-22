@@ -6,10 +6,18 @@ from .agent import (
     AgentTaskRunner,
     RequirementInput,
 )
+from .goal import (
+    GoalExecutionResult,
+    GoalExecutionStatus,
+    PreparedGoalExecution,
+)
 
 __all__ = [
     "AgentExecutionResult",
     "AgentExecutionStatus",
     "AgentTaskRunner",
+    "GoalExecutionResult",
+    "GoalExecutionStatus",
+    "PreparedGoalExecution",
     "RequirementInput",
 ]

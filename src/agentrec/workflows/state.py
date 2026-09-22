@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ..domain import AgentState
 from ..evidence import RequirementEvidence, SelectedProductEvidence
-from ..planning import PlannerDecision
+from ..planning import GoalBudgetAllocation, PlannerDecision
 from ..replanning import FailureDiagnosis, ReplanDirective
 from ..services import PlanEvaluation
 from ..tools import RecommendationToolArgs, RecommendationToolResult
@@ -22,6 +23,7 @@ class ShoppingWorkflowState(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     agent_state: AgentState
+    goal_budget_allocation: GoalBudgetAllocation | None = None
     recommendation_args: RecommendationToolArgs | None = None
     last_tool_result: RecommendationToolResult | None = None
     selected_parent_asin: str | None = None
@@ -54,6 +56,29 @@ class ShoppingWorkflowState(BaseModel):
             ):
                 raise ValueError("evaluation must describe the current ShoppingPlan version.")
         plan = self.agent_state.shopping_plan
+        if self.goal_budget_allocation is not None:
+            plan_ids = tuple(
+                value.requirement_id for value in plan.requirements
+            )
+            allocation_ids = tuple(
+                value.requirement_id
+                for value in self.goal_budget_allocation.allocations
+            )
+            if allocation_ids != plan_ids:
+                raise ValueError(
+                    "goal_budget_allocation requirement IDs must match ShoppingPlan order."
+                )
+            cent = Decimal("0.01")
+            allocation_total = Decimal(
+                str(self.goal_budget_allocation.total_budget)
+            ).quantize(cent, rounding=ROUND_HALF_UP)
+            plan_total = Decimal(str(plan.total_budget)).quantize(
+                cent, rounding=ROUND_HALF_UP
+            )
+            if allocation_total != plan_total:
+                raise ValueError(
+                    "goal_budget_allocation total budget must match ShoppingPlan."
+                )
         if self.current_evidence is not None:
             if (
                 self.current_evidence.plan_id != plan.plan_id

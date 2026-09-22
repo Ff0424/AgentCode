@@ -8,6 +8,7 @@ still owned by ShoppingPlanService and the immutable domain model.
 
 from __future__ import annotations
 
+from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import Annotated, Any
 
@@ -20,7 +21,13 @@ from ..decision import (
 )
 from ..domain import AgentState
 from ..memory import MemoryStore, RequirementMemoryMerger
-from ..planning import RequirementExtractionDecision
+from ..planning import (
+    DeterministicBudgetAllocator,
+    GoalRequirementProjection,
+    GoalToRequirementProjector,
+    RequirementExtractionDecision,
+    ShoppingGoalExtractionDecision,
+)
 from ..response import (
     DeterministicFinalResponseRenderer,
     FinalResponseResult,
@@ -29,6 +36,11 @@ from ..response import (
 )
 from ..services import ShoppingPlanService
 from ..workflows import ShoppingWorkflowState, WorkflowRoute, build_shopping_workflow
+from .goal import (
+    GoalExecutionResult,
+    GoalExecutionStatus,
+    PreparedGoalExecution,
+)
 
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -83,6 +95,9 @@ class AgentTaskRunner:
         memory_merger: RequirementMemoryMerger | None = None,
         decision_policy: Any | None = None,
         decision_executor: Any | None = None,
+        goal_extractor: Any | None = None,
+        goal_projector: Any | None = None,
+        budget_allocator: Any | None = None,
     ) -> None:
         dependencies = (
             (requirement_extractor, "extract", "requirement_extractor"),
@@ -145,6 +160,134 @@ class AgentTaskRunner:
             raise TypeError("decision_executor must provide execute().")
         self._decision_policy = decision_policy
         self._decision_executor = decision_executor
+        if goal_extractor is not None and not callable(
+            getattr(goal_extractor, "extract", None)
+        ):
+            raise TypeError("goal_extractor must provide extract().")
+        self._goal_extractor = goal_extractor
+        self._goal_projector = (
+            GoalToRequirementProjector()
+            if goal_projector is None
+            else goal_projector
+        )
+        self._budget_allocator = (
+            DeterministicBudgetAllocator()
+            if budget_allocator is None
+            else budget_allocator
+        )
+        if not callable(getattr(self._goal_projector, "project", None)):
+            raise TypeError("goal_projector must provide project().")
+        if not callable(getattr(self._budget_allocator, "allocate", None)):
+            raise TypeError("budget_allocator must provide allocate().")
+
+    def run_goal(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        plan_id: str,
+        user_request: str,
+        currency: str = "USD",
+        recursion_limit: int = 50,
+    ) -> GoalExecutionResult:
+        """Prepare one extracted shopping goal without invoking the workflow."""
+
+        if self._goal_extractor is None:
+            raise RuntimeError("run_goal requires a configured goal_extractor.")
+        if (
+            isinstance(recursion_limit, bool)
+            or not isinstance(recursion_limit, int)
+            or recursion_limit < 1
+        ):
+            raise ValueError("recursion_limit must be a positive integer.")
+
+        decision = ShoppingGoalExtractionDecision.model_validate(
+            self._goal_extractor.extract(user_request=user_request)
+        )
+        if decision.clarification_needed:
+            return GoalExecutionResult(
+                status=GoalExecutionStatus.CLARIFICATION_REQUIRED,
+                goal_decision=decision,
+                clarification_question=decision.clarification_question,
+            )
+
+        original_projection = self._goal_projector.project(decision)
+        final_projection = original_projection
+        memory_error: str | None = None
+
+        # Current memory has no requirement/category scope. Applying it to a
+        # multi-goal bundle could leak one preference across unrelated products.
+        if (
+            len(original_projection.requirements) == 1
+            and self._memory_store is not None
+            and self._memory_merger is not None
+        ):
+            requirement = original_projection.requirements[0]
+            try:
+                preferences = self._memory_store.get_confirmed_preferences(user_id)
+            except Exception:
+                memory_error = "memory_store_failed"
+            else:
+                try:
+                    merged = self._memory_merger.merge(requirement, preferences)
+                except Exception:
+                    memory_error = "memory_merge_failed"
+                else:
+                    final_projection = GoalRequirementProjection(
+                        total_budget=original_projection.total_budget,
+                        requirements=(merged,),
+                        allocation_preferences=(
+                            original_projection.allocation_preferences
+                        ),
+                    )
+
+        # Allocation must succeed before any business plan is created.
+        allocation = self._budget_allocator.allocate(final_projection)
+        projection_ids = tuple(
+            value.requirement_id for value in final_projection.requirements
+        )
+        allocation_ids = tuple(
+            value.requirement_id for value in allocation.allocations
+        )
+        if projection_ids != allocation_ids:
+            raise ValueError(
+                "Projection and allocation requirement IDs must match in order."
+            )
+        cent = Decimal("0.01")
+        if Decimal(str(final_projection.total_budget)).quantize(
+            cent, rounding=ROUND_HALF_UP
+        ) != Decimal(str(allocation.total_budget)).quantize(
+            cent, rounding=ROUND_HALF_UP
+        ):
+            raise ValueError("Projection and allocation total budgets must match.")
+
+        plan = self._plan_service.create_plan(
+            plan_id=plan_id,
+            user_id=user_id,
+            currency=currency,
+            total_budget=final_projection.total_budget,
+            requirements=final_projection.requirements,
+        )
+        initial = ShoppingWorkflowState(
+            agent_state=AgentState(
+                user_id=user_id,
+                session_id=session_id,
+                shopping_plan=plan,
+            ),
+            goal_budget_allocation=allocation,
+        )
+        prepared = PreparedGoalExecution(
+            projection=final_projection,
+            budget_allocation=allocation,
+            initial_workflow_state=initial,
+            recursion_limit=recursion_limit,
+        )
+        return GoalExecutionResult(
+            status=GoalExecutionStatus.PREPARED,
+            goal_decision=decision,
+            prepared_execution=prepared,
+            memory_error=memory_error,
+        )
 
     def run(
         self,
