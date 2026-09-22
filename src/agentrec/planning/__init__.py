@@ -1,5 +1,10 @@
 """Provider-neutral planning contracts for AgentRec V2."""
 
+from .budget_allocation import (
+    DeterministicBudgetAllocator,
+    GoalBudgetAllocation,
+    RequirementBudgetAllocation,
+)
 from .contracts import (
     PlannerAction,
     PlannerDecision,
@@ -40,9 +45,11 @@ from .requirement_extraction import (
 
 __all__ = [
     "AllocationPreferenceType",
+    "DeterministicBudgetAllocator",
     "FakePlanner",
     "FakeRequirementExtractor",
     "GoalAllocationPreference",
+    "GoalBudgetAllocation",
     "GoalRequirementProjection",
     "GoalRequirementProposal",
     "GoalToRequirementProjector",
@@ -58,6 +65,7 @@ __all__ = [
     "RequestUserConfirmationDecision",
     "RequirementClarificationRequired",
     "RequirementAllocationPreference",
+    "RequirementBudgetAllocation",
     "RequirementExtractionDecision",
     "RequirementExtractor",
     "SelectCandidateDecision",
