@@ -21,6 +21,7 @@ from .goal_contracts import (
     GoalRequirementProposal,
     ShoppingGoalExtractionDecision,
 )
+from .goal_extraction import FakeGoalExtractor, GoalExtractor, StructuredGoalExtractor
 from .goal_projection import (
     GoalRequirementProjection,
     GoalToRequirementProjector,
@@ -47,12 +48,14 @@ __all__ = [
     "AllocationPreferenceType",
     "DeterministicBudgetAllocator",
     "FakePlanner",
+    "FakeGoalExtractor",
     "FakeRequirementExtractor",
     "GoalAllocationPreference",
     "GoalBudgetAllocation",
     "GoalRequirementProjection",
     "GoalRequirementProposal",
     "GoalToRequirementProjector",
+    "GoalExtractor",
     "Planner",
     "PlannerAction",
     "PlannerDecision",
@@ -71,6 +74,7 @@ __all__ = [
     "SelectCandidateDecision",
     "SelectRequirementDecision",
     "StructuredLLMPlanner",
+    "StructuredGoalExtractor",
     "StructuredRequirementExtractor",
     "ShoppingGoalExtractionDecision",
     "OpenAICompatiblePlannerProvider",
