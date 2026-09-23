@@ -100,6 +100,7 @@ def conflict(
     contradicted: tuple[str, ...] = (),
 ) -> ConflictResponseContext:
     exhausted = reason is ConflictReason.REPLAN_ATTEMPTS_EXHAUSTED
+    allocation_exhausted = reason is ConflictReason.GOAL_ALLOCATION_EXHAUSTED
     return ConflictResponseContext(
         plan_id="plan",
         plan_version=0,
@@ -110,7 +111,9 @@ def conflict(
             required_features=("HDMI", "USB-C"),
             reason=reason,
             replan_attempts_performed=1 if exhausted else 0,
-            candidate_pool_sizes=(5, 10) if exhausted else (5,),
+            candidate_pool_sizes=(
+                () if allocation_exhausted else (5, 10) if exhausted else (5,)
+            ),
             verification_status_counts=counts() if exhausted else None,
             failed_constraints=("HDMI", "USB-C") if exhausted else (),
             unknown_constraints=unknown,
@@ -180,6 +183,16 @@ class FinalResponseRendererTests(unittest.TestCase):
         self.assertIn("- HDMI", text)
         self.assertNotIn("USB-C 不支持", text)
         self.assertNotIn("HDMI 推荐失败", text)
+
+    def test_goal_allocation_exhausted_wording_is_distinct_and_deterministic(self) -> None:
+        context = conflict(ConflictReason.GOAL_ALLOCATION_EXHAUSTED)
+        first = RENDERER.render(context)
+        second = RENDERER.render(context)
+        self.assertEqual(first, second)
+        self.assertIn("分配的执行预算", first.text)
+        self.assertNotIn("没有返回候选商品", first.text)
+        self.assertNotIn("候选池", first.text)
+        self.assertNotIn("证据不足", first.text)
 
     def test_security_sensitive_audit_fields_do_not_leak(self) -> None:
         sensitive = (

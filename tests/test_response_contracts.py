@@ -102,6 +102,19 @@ def exhaustion(**changes: object) -> ConflictDecisionSummary:
     return ConflictDecisionSummary(**values)
 
 
+def allocation_exhausted(**changes: object) -> ConflictDecisionSummary:
+    values = {
+        "requirement_id": "mouse",
+        "category": "Mouse",
+        "required_features": (),
+        "reason": ConflictReason.GOAL_ALLOCATION_EXHAUSTED,
+        "replan_attempts_performed": 0,
+        "candidate_pool_sizes": (),
+    }
+    values.update(changes)
+    return ConflictDecisionSummary(**values)
+
+
 class ResponseContractTests(unittest.TestCase):
     def test_models_are_frozen_and_forbid_extra_fields(self) -> None:
         value = evidence()
@@ -231,6 +244,25 @@ class ResponseContractTests(unittest.TestCase):
             exhaustion(verification_status_counts=counts(eligible=1))
         with self.assertRaises(ValidationError):
             exhaustion(failed_constraints=())
+
+    def test_goal_allocation_exhausted_conflict_shape(self) -> None:
+        value = allocation_exhausted()
+        self.assertEqual(value.candidate_pool_sizes, ())
+        self.assertTrue(value.user_action_required)
+        invalid = (
+            {"candidate_pool_sizes": (5,)},
+            {"replan_attempts_performed": 1},
+            {"verification_status_counts": counts()},
+            {"failed_constraints": ("HDMI",)},
+            {"unknown_constraints": ("HDMI",)},
+            {"contradicted_constraints": ("HDMI",)},
+        )
+        for changes in invalid:
+            with self.subTest(changes=changes), self.assertRaises(ValidationError):
+                allocation_exhausted(**changes)
+        for factory in (no_candidates, exhaustion):
+            with self.subTest(factory=factory), self.assertRaises(ValidationError):
+                factory(candidate_pool_sizes=())
 
     def test_final_response_result_enforces_kind_summary_alignment(self) -> None:
         ready = FinalResponseResult(

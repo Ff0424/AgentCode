@@ -111,6 +111,8 @@ class DeterministicFinalResponseRenderer:
                     "以下要求已有证据与要求存在冲突：",
                     *(f"- {value}" for value in decision.contradicted_constraints),
                 ))
+        elif decision.reason is ConflictReason.GOAL_ALLOCATION_EXHAUSTED:
+            lines.append("当前要求无法在为其分配的执行预算内完成。")
         else:  # pragma: no cover - closed enum and validated contract
             raise ValueError(f"Unsupported conflict reason={decision.reason!r}.")
 

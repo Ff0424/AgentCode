@@ -2,13 +2,14 @@
 
 The projector is the response security boundary: it copies public product
 facts only from ShoppingPlan, constructs feature claims only through selected
-SUPPORTED verification provenance, and recognizes only the two frozen P0
-conflict shapes. It performs no rendering, I/O, service calls, or mutation.
+SUPPORTED verification provenance, and recognizes only the frozen P0 conflict
+shapes. It performs no rendering, I/O, service calls, or mutation.
 """
 
 from __future__ import annotations
 
 import math
+from decimal import Decimal, ROUND_HALF_UP
 from enum import Enum
 from typing import NoReturn
 
@@ -28,6 +29,11 @@ from ..verification import (
     ConstraintVerificationStatus,
 )
 from ..workflows import ShoppingWorkflowState, WorkflowRoute
+from ..workflows.budget import (
+    GoalAllocationExhaustedError,
+    GoalBudgetDerivationError,
+    derive_goal_recommendation_budget,
+)
 from .contracts import (
     ConflictDecisionSummary,
     ConflictReason,
@@ -64,6 +70,17 @@ def _same_money(left: float, right: float) -> bool:
     return math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-9)
 
 
+_CENT = Decimal("0.01")
+
+
+def _cent_money(value: float) -> Decimal:
+    return Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP)
+
+
+def _same_cent_money(left: float, right: float) -> bool:
+    return _cent_money(left) == _cent_money(right)
+
+
 def _requirement(state: ShoppingWorkflowState):
     requirement_id = state.agent_state.current_requirement_id
     matches = tuple(
@@ -75,6 +92,26 @@ def _requirement(state: ShoppingWorkflowState):
         _fail(
             ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
             "Terminal conflict has no unique current requirement.",
+        )
+    return matches[0]
+
+
+def _allocation_for(state: ShoppingWorkflowState, requirement_id: str):
+    allocation = state.goal_budget_allocation
+    if allocation is None:
+        _fail(
+            ProjectionErrorCode.MISSING_GROUNDING,
+            "Goal budget allocation is missing.",
+        )
+    matches = tuple(
+        value
+        for value in allocation.allocations
+        if value.requirement_id == requirement_id
+    )
+    if len(matches) != 1:
+        _fail(
+            ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+            "Goal requirement has no unique budget allocation.",
         )
     return matches[0]
 
@@ -203,6 +240,12 @@ class GroundedResponseProjector:
             _fail(
                 ProjectionErrorCode.MISSING_GROUNDING,
                 "Selected verification does not exactly cover hard-feature requirements.",
+            )
+
+        if state.goal_budget_allocation is not None:
+            GroundedResponseProjector._validate_selected_goal_budget_provenance(
+                state,
+                require_all_requirements=True,
             )
 
         products: list[ProductDecisionSummary] = []
@@ -342,6 +385,8 @@ class GroundedResponseProjector:
             return self._project_no_candidates(state)
         if state.agent_state.error_state == "constraint_verification:replan_attempts_exhausted":
             return self._project_exhaustion(state)
+        if state.agent_state.error_state == "goal_budget:allocation_exhausted":
+            return self._project_goal_allocation_exhausted(state)
         _fail(
             ProjectionErrorCode.UNSUPPORTED_TERMINAL_STATE,
             "CONFLICT state does not match a supported P0 terminal pattern.",
@@ -351,6 +396,11 @@ class GroundedResponseProjector:
     def _project_no_candidates(state: ShoppingWorkflowState) -> ConflictResponseContext:
         plan = state.agent_state.shopping_plan
         requirement = _requirement(state)
+        if state.goal_budget_allocation is not None:
+            GroundedResponseProjector._validate_selected_goal_budget_provenance(
+                state,
+                require_all_requirements=False,
+            )
         result = state.last_tool_result
         if result is None or result.returned_count != 0 or result.items:
             _fail(ProjectionErrorCode.STATE_INCONSISTENCY, "Tool result is not empty.")
@@ -465,20 +515,218 @@ class GroundedResponseProjector:
     @staticmethod
     def _validate_recommendation_constraints(state: ShoppingWorkflowState, requirement) -> None:
         args = state.recommendation_args
-        if args is None or (
-            args.category != requirement.category
-            or args.max_price != requirement.max_budget
-            or args.required_features != requirement.required_features
-        ):
+        if args is None:
             _fail(
                 ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
                 "Recommendation arguments differ from the current requirement.",
+            )
+        if state.goal_budget_allocation is None:
+            if (
+                args.category != requirement.category
+                or args.max_price != requirement.max_budget
+                or args.required_features != requirement.required_features
+            ):
+                _fail(
+                    ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                    "Recommendation arguments differ from the current requirement.",
+                )
+            return
+
+        provenance = state.current_recommendation_budget_provenance
+        if provenance is None:
+            _fail(
+                ProjectionErrorCode.MISSING_GROUNDING,
+                "Goal recommendation budget provenance is missing.",
+            )
+        try:
+            expected = derive_goal_recommendation_budget(
+                plan=state.agent_state.shopping_plan,
+                requirement=requirement,
+                allocation=state.goal_budget_allocation,
+            )
+        except GoalBudgetDerivationError as exc:
+            _fail(
+                ProjectionErrorCode.STATE_INCONSISTENCY,
+                f"Goal recommendation budget could not be recomputed: {type(exc).__name__}.",
+            )
+        if provenance != expected:
+            _fail(
+                ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                "Goal recommendation budget provenance differs from current runtime facts.",
+            )
+        if (
+            args.category != requirement.category
+            or args.required_features != requirement.required_features
+            or args.max_price is None
+            or args.max_price <= 0
+            or not _same_cent_money(
+                args.max_price,
+                provenance.derived_unit_max_price,
+            )
+        ):
+            _fail(
+                ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                "Goal recommendation arguments differ from budget provenance.",
+            )
+
+    @staticmethod
+    def _validate_selected_goal_budget_provenance(
+        state: ShoppingWorkflowState,
+        *,
+        require_all_requirements: bool,
+    ) -> None:
+        """Validate P0 one-SKU Goal selections without reconstructing fake history."""
+
+        plan = state.agent_state.shopping_plan
+        if state.goal_budget_allocation is None:
+            return
+        requirements = {value.requirement_id: value for value in plan.requirements}
+        items_by_requirement = {
+            requirement_id: tuple(
+                item
+                for item in plan.selected_items
+                if item.requirement_id == requirement_id
+            )
+            for requirement_id in requirements
+        }
+        selected_ids = {
+            requirement_id
+            for requirement_id, items in items_by_requirement.items()
+            if items
+        }
+        expected_ids = set(requirements) if require_all_requirements else selected_ids
+        provenance_by_id = {
+            value.requirement_id: value
+            for value in state.selected_recommendation_budget_provenance
+        }
+        if (
+            len(provenance_by_id)
+            != len(state.selected_recommendation_budget_provenance)
+            or set(provenance_by_id) != expected_ids
+        ):
+            _fail(
+                ProjectionErrorCode.MISSING_GROUNDING,
+                "Selected Goal budget provenance does not cover selected requirements.",
+            )
+        evidence_by_id = {
+            value.requirement_id: value for value in state.selected_evidence
+        }
+        if (
+            len(evidence_by_id) != len(state.selected_evidence)
+            or set(evidence_by_id) != expected_ids
+        ):
+            _fail(
+                ProjectionErrorCode.MISSING_GROUNDING,
+                "Selected evidence is missing for Goal budget provenance.",
+            )
+
+        mutation_versions: list[int] = []
+        for requirement in plan.requirements:
+            requirement_id = requirement.requirement_id
+            if requirement_id not in expected_ids:
+                continue
+            items = items_by_requirement[requirement_id]
+            if len(items) != 1:
+                _fail(
+                    ProjectionErrorCode.STATE_INCONSISTENCY,
+                    "P0 Goal provenance requires one selected product per requirement.",
+                )
+            item = items[0]
+            provenance = provenance_by_id[requirement_id]
+            allocation = _allocation_for(state, requirement_id)
+            if not _same_cent_money(
+                provenance.allocated_budget,
+                allocation.allocated_budget,
+            ):
+                _fail(
+                    ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                    "Selected provenance allocation differs from Goal allocation.",
+                )
+            if (provenance.explicit_max_budget is None) != (
+                requirement.max_budget is None
+            ) or (
+                provenance.explicit_max_budget is not None
+                and requirement.max_budget is not None
+                and not _same_cent_money(
+                    provenance.explicit_max_budget,
+                    requirement.max_budget,
+                )
+            ):
+                _fail(
+                    ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                    "Selected provenance explicit cap differs from requirement.",
+                )
+            allocated = _cent_money(allocation.allocated_budget)
+            explicit = (
+                None
+                if requirement.max_budget is None
+                else _cent_money(requirement.max_budget)
+            )
+            expected_effective = (
+                allocated if explicit is None else min(allocated, explicit)
+            )
+            if _cent_money(provenance.effective_subtotal_budget) != expected_effective:
+                _fail(
+                    ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                    "Selected provenance effective subtotal is inconsistent.",
+                )
+
+            # P0 selects one SKU for the full requirement. Revisit these two
+            # historical assumptions before supporting partial or multi-SKU READY.
+            if (
+                _cent_money(provenance.retained_subtotal_before_call)
+                != Decimal("0.00")
+                or provenance.remaining_quantity_before_call != requirement.quantity
+                or item.quantity != requirement.quantity
+            ):
+                _fail(
+                    ProjectionErrorCode.STATE_INCONSISTENCY,
+                    "Selected provenance violates P0 quantity/history semantics.",
+                )
+            if Decimal(str(item.price)) > Decimal(
+                str(provenance.derived_unit_max_price)
+            ):
+                _fail(
+                    ProjectionErrorCode.STATE_INCONSISTENCY,
+                    "Selected product price exceeds its derived Goal unit cap.",
+                )
+            selected_subtotal = _cent_money(item.price * item.quantity)
+            if selected_subtotal > expected_effective:
+                _fail(
+                    ProjectionErrorCode.STATE_INCONSISTENCY,
+                    "Selected product subtotal exceeds its Goal execution budget.",
+                )
+            evidence = evidence_by_id[requirement_id]
+            if (
+                evidence.plan_id != plan.plan_id
+                or evidence.requirement_id != requirement_id
+                or evidence.parent_asin != item.parent_asin
+                or provenance.plan_version_before_call + 1
+                != evidence.selected_at_plan_version
+            ):
+                _fail(
+                    ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                    "Selected Goal provenance does not match evidence mutation history.",
+                )
+            mutation_versions.append(evidence.selected_at_plan_version)
+
+        if require_all_requirements and (
+            not mutation_versions or plan.version != max(mutation_versions)
+        ):
+            _fail(
+                ProjectionErrorCode.IDENTITY_OR_VERSION_MISMATCH,
+                "READY Plan version does not match the final Goal selection mutation.",
             )
 
     @staticmethod
     def _project_exhaustion(state: ShoppingWorkflowState) -> ConflictResponseContext:
         plan = state.agent_state.shopping_plan
         requirement = _requirement(state)
+        if state.goal_budget_allocation is not None:
+            GroundedResponseProjector._validate_selected_goal_budget_provenance(
+                state,
+                require_all_requirements=False,
+            )
         if (
             state.replan_attempt != 1
             or state.recommendation_top_k != 10
@@ -689,6 +937,82 @@ class GroundedResponseProjector:
                 failed_constraints=failed,
                 unknown_constraints=unknown,
                 contradicted_constraints=contradicted,
+            ),
+            total_spent=plan.total_spent,
+            remaining_budget=plan.remaining_budget,
+        )
+
+    @staticmethod
+    def _project_goal_allocation_exhausted(
+        state: ShoppingWorkflowState,
+    ) -> ConflictResponseContext:
+        plan = state.agent_state.shopping_plan
+        requirement = _requirement(state)
+        if state.goal_budget_allocation is None:
+            _fail(
+                ProjectionErrorCode.UNSUPPORTED_TERMINAL_STATE,
+                "Goal allocation exhaustion requires Goal budget allocation.",
+            )
+        GroundedResponseProjector._validate_selected_goal_budget_provenance(
+            state,
+            require_all_requirements=False,
+        )
+        if any(
+            item.requirement_id == requirement.requirement_id
+            for item in plan.selected_items
+        ) or any(
+            value.requirement_id == requirement.requirement_id
+            for value in state.selected_recommendation_budget_provenance
+        ):
+            _fail(
+                ProjectionErrorCode.STATE_INCONSISTENCY,
+                "Allocation-exhausted requirement must remain unselected.",
+            )
+        if any(
+            value is not None
+            for value in (
+                state.recommendation_args,
+                state.last_tool_result,
+                state.current_recommendation_budget_provenance,
+                state.current_evidence,
+                state.current_verification,
+                state.current_evidence_attempt,
+                state.current_verification_attempt,
+            )
+        ):
+            _fail(
+                ProjectionErrorCode.STATE_INCONSISTENCY,
+                "Allocation exhaustion cannot contain Recommendation or grounding output.",
+            )
+        try:
+            derive_goal_recommendation_budget(
+                plan=plan,
+                requirement=requirement,
+                allocation=state.goal_budget_allocation,
+            )
+        except GoalAllocationExhaustedError:
+            pass
+        except GoalBudgetDerivationError as exc:
+            _fail(
+                ProjectionErrorCode.STATE_INCONSISTENCY,
+                f"Goal allocation state is invalid rather than exhausted: {type(exc).__name__}.",
+            )
+        else:
+            _fail(
+                ProjectionErrorCode.STATE_INCONSISTENCY,
+                "Goal allocation remains executable despite exhaustion marker.",
+            )
+        return ConflictResponseContext(
+            plan_id=plan.plan_id,
+            plan_version=plan.version,
+            currency=plan.currency,
+            decision=ConflictDecisionSummary(
+                requirement_id=requirement.requirement_id,
+                category=requirement.category,
+                required_features=requirement.required_features,
+                reason=ConflictReason.GOAL_ALLOCATION_EXHAUSTED,
+                replan_attempts_performed=0,
+                candidate_pool_sizes=(),
             ),
             total_spent=plan.total_spent,
             remaining_budget=plan.remaining_budget,

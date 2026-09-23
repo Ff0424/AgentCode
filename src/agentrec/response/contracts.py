@@ -45,6 +45,7 @@ class ResponseKind(str, Enum):
 class ConflictReason(str, Enum):
     NO_RECOMMENDATION_CANDIDATES = "no_recommendation_candidates"
     REPLAN_ATTEMPTS_EXHAUSTED = "replan_attempts_exhausted"
+    GOAL_ALLOCATION_EXHAUSTED = "goal_allocation_exhausted"
 
 
 class ResponseErrorCode(str, Enum):
@@ -112,7 +113,7 @@ class ConflictDecisionSummary(BaseModel):
     replan_attempts_performed: Annotated[int, Field(strict=True, ge=0, le=1)]
     candidate_pool_sizes: Annotated[
         tuple[Annotated[int, Field(strict=True, ge=1, le=50)], ...],
-        Field(min_length=1, max_length=2),
+        Field(max_length=2),
     ]
     verification_status_counts: CandidateStatusSummary | None = None
     failed_constraints: tuple[NonEmptyText, ...] = ()
@@ -122,6 +123,27 @@ class ConflictDecisionSummary(BaseModel):
 
     @model_validator(mode="after")
     def validate_conflict_shape(self) -> "ConflictDecisionSummary":
+        if self.reason is ConflictReason.GOAL_ALLOCATION_EXHAUSTED:
+            if self.replan_attempts_performed != 0:
+                raise ValueError(
+                    "Goal allocation exhaustion cannot contain replan attempts."
+                )
+            if self.candidate_pool_sizes:
+                raise ValueError("Goal allocation exhaustion cannot contain candidate pools.")
+            if self.verification_status_counts is not None:
+                raise ValueError(
+                    "Goal allocation exhaustion cannot contain verification counts."
+                )
+            if (
+                self.failed_constraints
+                or self.unknown_constraints
+                or self.contradicted_constraints
+            ):
+                raise ValueError(
+                    "Goal allocation exhaustion cannot claim verification failures."
+                )
+            return self
+
         if self.reason is ConflictReason.NO_RECOMMENDATION_CANDIDATES:
             if self.verification_status_counts is not None:
                 raise ValueError(
