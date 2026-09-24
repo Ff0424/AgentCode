@@ -195,7 +195,7 @@ class AgentTaskRunner:
         if not callable(getattr(self._workflow_runner, "execute", None)):
             raise TypeError("workflow_runner must provide execute().")
 
-    def run_goal(
+    def prepare_goal(
         self,
         *,
         user_id: str,
@@ -304,6 +304,82 @@ class AgentTaskRunner:
             memory_error=memory_error,
         )
 
+    def run_goal(
+        self,
+        *,
+        user_id: str,
+        session_id: str,
+        plan_id: str,
+        user_request: str,
+        currency: str = "USD",
+        recursion_limit: int = 50,
+    ) -> GoalExecutionResult:
+        """Prepare and execute one multi-requirement shopping goal."""
+
+        prepared_result = self.prepare_goal(
+            user_id=user_id,
+            session_id=session_id,
+            plan_id=plan_id,
+            user_request=user_request,
+            currency=currency,
+            recursion_limit=recursion_limit,
+        )
+        if prepared_result.status is GoalExecutionStatus.CLARIFICATION_REQUIRED:
+            return prepared_result
+        if (
+            prepared_result.status is not GoalExecutionStatus.PREPARED
+            or prepared_result.prepared_execution is None
+        ):
+            raise RuntimeError("Goal preparation did not produce an executable snapshot.")
+
+        prepared = prepared_result.prepared_execution
+        output = self._workflow_runner.execute(
+            prepared.initial_workflow_state,
+            recursion_limit=prepared.recursion_limit,
+        )
+        route = self._validate_terminal_route(output)
+        status = GoalExecutionStatus(route.value)
+        final_response, response_error = self._render_terminal_response(output)
+        return GoalExecutionResult(
+            status=status,
+            goal_decision=prepared_result.goal_decision,
+            prepared_execution=prepared,
+            workflow_state=output,
+            final_response=final_response,
+            response_error=response_error,
+            memory_error=prepared_result.memory_error,
+        )
+
+    @staticmethod
+    def _validate_terminal_route(output: ShoppingWorkflowState) -> WorkflowRoute:
+        route = output.route
+        if route not in {
+            WorkflowRoute.READY,
+            WorkflowRoute.CONFLICT,
+            WorkflowRoute.ERROR,
+        }:
+            raise RuntimeError(f"Workflow ended with invalid route={route!r}.")
+        return route
+
+    def _render_terminal_response(
+        self,
+        output: ShoppingWorkflowState,
+    ) -> tuple[FinalResponseResult | None, ResponseErrorCode | None]:
+        """Render READY/CONFLICT output while isolating presentation failures."""
+
+        if output.route is WorkflowRoute.ERROR:
+            return None, None
+        try:
+            response_context = self._response_projector.project(output)
+        except Exception:
+            # Internal projection details must not cross the integration boundary.
+            return None, ResponseErrorCode.PROJECTION_FAILED
+        try:
+            return self._response_renderer.render(response_context), None
+        except Exception:
+            # Preserve the successful workflow result while reporting a safe code.
+            return None, ResponseErrorCode.RENDER_FAILED
+
     def run(
         self,
         *,
@@ -402,28 +478,9 @@ class AgentTaskRunner:
             initial,
             recursion_limit=recursion_limit,
         )
-        status = {
-            WorkflowRoute.READY: AgentExecutionStatus.READY,
-            WorkflowRoute.CONFLICT: AgentExecutionStatus.CONFLICT,
-            WorkflowRoute.ERROR: AgentExecutionStatus.ERROR,
-        }.get(output.route)
-        if status is None:
-            raise RuntimeError(f"Workflow ended with invalid route={output.route!r}.")
-
-        final_response: FinalResponseResult | None = None
-        response_error: ResponseErrorCode | None = None
-        if status in (AgentExecutionStatus.READY, AgentExecutionStatus.CONFLICT):
-            try:
-                response_context = self._response_projector.project(output)
-            except Exception:
-                # Internal projection details must not cross the integration boundary.
-                response_error = ResponseErrorCode.PROJECTION_FAILED
-            else:
-                try:
-                    final_response = self._response_renderer.render(response_context)
-                except Exception:
-                    # Preserve the successful workflow result while reporting a safe code.
-                    response_error = ResponseErrorCode.RENDER_FAILED
+        route = self._validate_terminal_route(output)
+        status = AgentExecutionStatus(route.value)
+        final_response, response_error = self._render_terminal_response(output)
 
         return AgentExecutionResult(
             status=status,

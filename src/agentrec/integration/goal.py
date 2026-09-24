@@ -1,8 +1,8 @@
-"""Immutable integration contracts for prepared multi-requirement goals.
+"""Immutable integration contracts for multi-requirement Goal execution.
 
-These contracts bind planning projection, deterministic budget allocation, and
-the initial workflow runtime state.  They represent preparation only: no graph,
-recommendation, evidence, verification, or response execution has occurred.
+The preparation snapshot binds planning projection, deterministic budget
+allocation, and the initial workflow state.  The result envelope additionally
+binds terminal workflow and response output without duplicating their logic.
 """
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ from ..planning import (
     GoalRequirementProjection,
     ShoppingGoalExtractionDecision,
 )
-from ..workflows import ShoppingWorkflowState
+from ..response import FinalResponseResult, ResponseErrorCode, ResponseKind
+from ..workflows import ShoppingWorkflowState, WorkflowRoute
 
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -32,10 +33,13 @@ def _money_key(value: float) -> Decimal:
 
 
 class GoalExecutionStatus(str, Enum):
-    """Terminal statuses for the preparation-only goal entry point."""
+    """Preparation and terminal statuses for the Goal execution entry points."""
 
     CLARIFICATION_REQUIRED = "clarification_required"
     PREPARED = "prepared"
+    READY = "ready"
+    CONFLICT = "conflict"
+    ERROR = "error"
 
 
 class PreparedGoalExecution(BaseModel):
@@ -120,7 +124,7 @@ class PreparedGoalExecution(BaseModel):
 
 
 class GoalExecutionResult(BaseModel):
-    """Preparation result or a safe clarification response boundary."""
+    """Validated preparation or terminal result for one Goal execution."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -128,6 +132,9 @@ class GoalExecutionResult(BaseModel):
     goal_decision: ShoppingGoalExtractionDecision
     prepared_execution: PreparedGoalExecution | None = None
     clarification_question: NonEmptyText | None = None
+    workflow_state: ShoppingWorkflowState | None = None
+    final_response: FinalResponseResult | None = None
+    response_error: ResponseErrorCode | None = None
     memory_error: str | None = None
 
     @model_validator(mode="after")
@@ -147,15 +154,139 @@ class GoalExecutionResult(BaseModel):
                 raise ValueError(
                     "CLARIFICATION_REQUIRED cannot contain prepared_execution."
                 )
+            if any(
+                value is not None
+                for value in (
+                    self.workflow_state,
+                    self.final_response,
+                    self.response_error,
+                    self.memory_error,
+                )
+            ):
+                raise ValueError(
+                    "CLARIFICATION_REQUIRED cannot contain runtime output or memory_error."
+                )
             if self.clarification_question != self.goal_decision.clarification_question:
                 raise ValueError(
                     "clarification_question must match the validated goal decision."
                 )
-        elif self.status is GoalExecutionStatus.PREPARED:
-            if self.goal_decision.clarification_needed:
-                raise ValueError("PREPARED requires a complete goal decision.")
-            if self.prepared_execution is None:
-                raise ValueError("PREPARED requires prepared_execution.")
-            if self.clarification_question is not None:
-                raise ValueError("PREPARED cannot contain clarification_question.")
+            return self
+
+        if self.goal_decision.clarification_needed:
+            raise ValueError(f"{self.status.value.upper()} requires a complete goal decision.")
+        if self.prepared_execution is None:
+            raise ValueError(f"{self.status.value.upper()} requires prepared_execution.")
+        if self.clarification_question is not None:
+            raise ValueError(
+                f"{self.status.value.upper()} cannot contain clarification_question."
+            )
+
+        if self.status is GoalExecutionStatus.PREPARED:
+            if any(
+                value is not None
+                for value in (
+                    self.workflow_state,
+                    self.final_response,
+                    self.response_error,
+                )
+            ):
+                raise ValueError("PREPARED cannot contain terminal runtime output.")
+            return self
+
+        if self.workflow_state is None:
+            raise ValueError(f"{self.status.value.upper()} requires workflow_state.")
+        expected_route = {
+            GoalExecutionStatus.READY: WorkflowRoute.READY,
+            GoalExecutionStatus.CONFLICT: WorkflowRoute.CONFLICT,
+            GoalExecutionStatus.ERROR: WorkflowRoute.ERROR,
+        }[self.status]
+        if self.workflow_state.route is not expected_route:
+            raise ValueError(
+                "Goal execution status must match the terminal workflow route."
+            )
+        self._validate_terminal_binding()
+
+        if self.status is GoalExecutionStatus.ERROR:
+            if self.final_response is not None or self.response_error is not None:
+                raise ValueError("ERROR cannot contain final response output.")
+            return self
+
+        expected_kind = (
+            ResponseKind.READY
+            if self.status is GoalExecutionStatus.READY
+            else ResponseKind.CONFLICT
+        )
+        if self.final_response is not None:
+            if self.response_error is not None:
+                raise ValueError(
+                    "A terminal response and response_error are mutually exclusive."
+                )
+            if self.final_response.kind is not expected_kind:
+                raise ValueError(
+                    "Final response kind must match the Goal execution status."
+                )
+        elif self.response_error not in {
+            ResponseErrorCode.PROJECTION_FAILED,
+            ResponseErrorCode.RENDER_FAILED,
+        }:
+            raise ValueError(
+                "READY and CONFLICT require either a final response or a safe response_error."
+            )
         return self
+
+    def _validate_terminal_binding(self) -> None:
+        """Bind terminal runtime state to the immutable preparation snapshot."""
+
+        prepared = self.prepared_execution
+        terminal = self.workflow_state
+        if prepared is None or terminal is None:  # guarded by validate_status_payload
+            raise ValueError("Terminal binding requires prepared and workflow state.")
+        initial = prepared.initial_workflow_state
+        initial_agent = initial.agent_state
+        terminal_agent = terminal.agent_state
+        initial_plan = initial_agent.shopping_plan
+        terminal_plan = terminal_agent.shopping_plan
+
+        if (
+            terminal_agent.user_id != initial_agent.user_id
+            or terminal_agent.session_id != initial_agent.session_id
+            or terminal_plan.plan_id != initial_plan.plan_id
+            or terminal_plan.user_id != initial_plan.user_id
+            or terminal_plan.currency != initial_plan.currency
+            or _money_key(terminal_plan.total_budget)
+            != _money_key(initial_plan.total_budget)
+        ):
+            raise ValueError(
+                "Terminal workflow identity must match the prepared Goal execution."
+            )
+
+        def immutable_requirement_fields(requirement):
+            return (
+                requirement.requirement_id,
+                requirement.category,
+                requirement.quantity,
+                requirement.max_budget,
+                requirement.required_features,
+                requirement.soft_preferences,
+                requirement.priority,
+            )
+
+        initial_requirements = tuple(
+            immutable_requirement_fields(value) for value in initial_plan.requirements
+        )
+        terminal_requirements = tuple(
+            immutable_requirement_fields(value) for value in terminal_plan.requirements
+        )
+        if terminal_requirements != initial_requirements:
+            raise ValueError(
+                "Terminal requirements must preserve prepared identity, order, and constraints."
+            )
+        if (
+            initial.goal_budget_allocation != prepared.budget_allocation
+            or terminal.goal_budget_allocation != prepared.budget_allocation
+        ):
+            raise ValueError(
+                "Terminal workflow state must preserve the prepared Goal allocation."
+            )
+        if terminal_plan.version < initial_plan.version:
+            raise ValueError("Terminal ShoppingPlan version cannot move backwards.")

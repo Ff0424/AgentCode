@@ -185,7 +185,7 @@ def runner(
 
 
 def prepare(value: AgentTaskRunner) -> GoalExecutionResult:
-    return value.run_goal(
+    return value.prepare_goal(
         user_id="user-1",
         session_id="session-1",
         plan_id="plan-1",
@@ -372,10 +372,17 @@ class GoalExecutionPreparationTests(unittest.TestCase):
         self.assertEqual(prepared.budget_allocation.allocations[0].allocated_budget, 500)
         self.assertIsNone(prepared.projection.requirements[0].max_budget)
 
-    def test_missing_goal_extractor_only_blocks_run_goal(self) -> None:
+    def test_missing_goal_extractor_blocks_both_goal_entry_points(self) -> None:
         value = runner(goal_extractor=False)
         with self.assertRaisesRegex(RuntimeError, "goal_extractor"):
             prepare(value)
+        with self.assertRaisesRegex(RuntimeError, "goal_extractor"):
+            value.run_goal(
+                user_id="user-1",
+                session_id="session-1",
+                plan_id="plan-1",
+                user_request="prepare my trip",
+            )
 
     def test_goal_result_cross_field_rules(self) -> None:
         decision = clarification_decision()
