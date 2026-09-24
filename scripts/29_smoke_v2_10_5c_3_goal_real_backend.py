@@ -20,8 +20,11 @@ import argparse
 import os
 import sys
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from typing import Any
 
 
 SCRIPT_PATH = Path(__file__).resolve()
@@ -29,7 +32,7 @@ DEFAULT_PROJECT_ROOT = SCRIPT_PATH.parents[1]
 if str(DEFAULT_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(DEFAULT_PROJECT_ROOT))
 
-from src.agentrec.domain import ShoppingRequirement  # noqa: E402
+from src.agentrec.domain import PlanStatus, ShoppingRequirement  # noqa: E402
 from src.agentrec.evidence import (  # noqa: E402
     EvidenceCandidate,
     EvidenceEmptyError,
@@ -49,12 +52,27 @@ from src.agentrec.tools import (  # noqa: E402
     RecommendationToolArgs,
     RecommendationToolResult,
 )
+from src.agentrec.integration import AgentTaskRunner, GoalExecutionStatus  # noqa: E402
+from src.agentrec.planning import (  # noqa: E402
+    AllocationPreferenceType,
+    FakeGoalExtractor,
+    FakeRequirementExtractor,
+    GoalAllocationPreference,
+    GoalRequirementProposal,
+    RequirementExtractionDecision,
+    SelectCandidateDecision,
+    SelectRequirementDecision,
+    ShoppingGoalExtractionDecision,
+)
+from src.agentrec.response import ResponseKind  # noqa: E402
+from src.agentrec.services import ShoppingPlanService  # noqa: E402
 from src.agentrec.verification import (  # noqa: E402
     CandidateVerificationStatus,
     ConstraintVerificationStatus,
     EvidenceConstraintVerifier,
     RequirementVerification,
 )
+from src.agentrec.workflows import WorkflowRoute  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -76,6 +94,17 @@ DOCK_CATEGORY = "Docking Stations"
 EVIDENCE_PLAN_ID = "v2-10-5c-3-stage-2"
 EVIDENCE_PLAN_VERSION = 0
 EVIDENCE_REQUIREMENT_ID = "req-001"
+GOLDEN_TOTAL_BUDGET = 500.0
+GOLDEN_REQUEST = (
+    "我准备出差办公，预算 500 美元，需要扩展坞、鼠标和耳机。"
+    "扩展坞必须支持 HDMI，鼠标尽量便宜，耳机可以多分一点预算。"
+    "根据我以前的购买习惯帮我配一套。"
+)
+GOLDEN_REQUIREMENTS = (
+    ("req-001", "Docking Stations", 166.67),
+    ("req-002", "Mice", 83.33),
+    ("req-003", "Headphones", 250.00),
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +136,57 @@ class ArtifactInitializationError(RuntimeError):
 
 class ModelInitializationError(RuntimeError):
     """The local BGE-M3 query encoder failed initialization."""
+
+
+class GoldenValidationError(RuntimeError):
+    """One sanitized Stage-3 acceptance failure."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class GoldenDeterministicPlanner:
+    """Select the first pending requirement and first eligible candidate."""
+
+    _SELECTABLE_REQUIREMENT_STATUSES = {"pending", "candidate_selected"}
+
+    def decide(self, *, context: Mapping[str, Any]):
+        if not isinstance(context, Mapping):
+            raise TypeError("Planner context must be a mapping.")
+        decision_key = context.get("decision_key")
+        if not isinstance(decision_key, str):
+            raise ValueError("Planner context has no decision_key.")
+        if decision_key.startswith("select_requirement:"):
+            requirements = context.get("requirements")
+            if not isinstance(requirements, tuple):
+                raise ValueError("Requirement planner context is invalid.")
+            selectable = tuple(
+                requirement
+                for requirement in requirements
+                if requirement.get("status")
+                in self._SELECTABLE_REQUIREMENT_STATUSES
+            )
+            if not selectable:
+                raise ValueError("Requirement planner received no pending requirement.")
+            return SelectRequirementDecision(
+                plan_id=context["plan_id"],
+                plan_version=context["plan_version"],
+                requirement_id=selectable[0]["requirement_id"],
+                reason="golden_real_backend_first_pending_requirement",
+            )
+        if decision_key.startswith("select_candidate:"):
+            candidates = context.get("candidates")
+            if not isinstance(candidates, tuple) or not candidates:
+                raise ValueError("Candidate planner received no eligible candidate.")
+            return SelectCandidateDecision(
+                plan_id=context["plan_id"],
+                plan_version=context["plan_version"],
+                requirement_id=context["requirement_id"],
+                parent_asin=candidates[0]["parent_asin"],
+                reason="golden_real_backend_first_eligible_candidate",
+            )
+        raise ValueError(f"Unsupported planner decision_key={decision_key!r}.")
 
 
 def _section(title: str) -> None:
@@ -426,7 +506,301 @@ def _verification_failure_reason(summary: EvidenceProbeSummary) -> str:
     return "NO_ELIGIBLE_CANDIDATE"
 
 
+def _money(value: float) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _build_goal_decision() -> ShoppingGoalExtractionDecision:
+    return ShoppingGoalExtractionDecision(
+        total_budget=GOLDEN_TOTAL_BUDGET,
+        requirement_proposals=(
+            GoalRequirementProposal(
+                category="Docking Stations",
+                quantity=1,
+                max_budget=None,
+                required_features=("HDMI",),
+                soft_preferences=(),
+                priority=3,
+            ),
+            GoalRequirementProposal(
+                category="Mice",
+                quantity=1,
+                max_budget=None,
+                required_features=(),
+                soft_preferences=(),
+                priority=3,
+            ),
+            GoalRequirementProposal(
+                category="Headphones",
+                quantity=1,
+                max_budget=None,
+                required_features=(),
+                soft_preferences=(),
+                priority=3,
+            ),
+        ),
+        allocation_preferences=(
+            GoalAllocationPreference(
+                target_index=1,
+                preference=AllocationPreferenceType.SAVE_MORE,
+            ),
+            GoalAllocationPreference(
+                target_index=2,
+                preference=AllocationPreferenceType.ALLOCATE_MORE,
+            ),
+        ),
+        clarification_needed=False,
+        clarification_question=None,
+    )
+
+
+def _build_legacy_requirement_extractor() -> FakeRequirementExtractor:
+    """Satisfy the legacy constructor dependency unused by run_goal()."""
+
+    return FakeRequirementExtractor(
+        RequirementExtractionDecision(
+            category="constructor-placeholder",
+            quantity=1,
+            max_budget=1.0,
+            required_features=(),
+            soft_preferences=(),
+            priority=3,
+            clarification_needed=False,
+            reason="legacy constructor dependency unused by run_goal",
+        )
+    )
+
+
+def _print_terminal_failure(result: Any) -> None:
+    state = getattr(result, "workflow_state", None)
+    if state is None:
+        return
+    print(f"error_state={state.agent_state.error_state}")
+    diagnosis = state.current_failure_diagnosis
+    print(
+        "failure_diagnosis="
+        f"{None if diagnosis is None else type(diagnosis).__name__}"
+    )
+    print(f"failure_history_count={len(state.failure_history)}")
+    print(f"replan_history_count={len(state.replan_history)}")
+
+
+def _validate_and_print_golden_result(result: Any, *, user_id: str) -> bool:
+    if result.status is GoalExecutionStatus.CLARIFICATION_REQUIRED:
+        raise GoldenValidationError("GOAL_CLARIFICATION_UNEXPECTED")
+    if result.status is GoalExecutionStatus.CONFLICT:
+        _print_terminal_failure(result)
+        raise GoldenValidationError("WORKFLOW_CONFLICT")
+    if result.status is GoalExecutionStatus.ERROR:
+        _print_terminal_failure(result)
+        raise GoldenValidationError("WORKFLOW_ERROR")
+    if result.status is not GoalExecutionStatus.READY:
+        raise GoldenValidationError("UNEXPECTED_TERMINAL_STATUS")
+    if result.workflow_state is None or result.prepared_execution is None:
+        raise GoldenValidationError("UNEXPECTED_TERMINAL_STATUS")
+    if (
+        result.workflow_state.route is not WorkflowRoute.READY
+        or result.final_response is None
+        or result.response_error is not None
+        or result.memory_error is not None
+    ):
+        raise GoldenValidationError("RESPONSE_ERROR")
+
+    prepared = result.prepared_execution
+    allocation = prepared.budget_allocation
+    projection = prepared.projection
+    expected_ids = tuple(value[0] for value in GOLDEN_REQUIREMENTS)
+    expected_categories = tuple(value[1] for value in GOLDEN_REQUIREMENTS)
+    expected_allocations = tuple(_money(value[2]) for value in GOLDEN_REQUIREMENTS)
+    if (
+        tuple(value.requirement_id for value in projection.requirements)
+        != expected_ids
+        or tuple(value.category for value in projection.requirements)
+        != expected_categories
+        or any(value.max_budget is not None for value in projection.requirements)
+        or tuple(value.requirement_id for value in allocation.allocations)
+        != expected_ids
+        or tuple(_money(value.allocated_budget) for value in allocation.allocations)
+        != expected_allocations
+        or _money(allocation.total_budget) != _money(GOLDEN_TOTAL_BUDGET)
+        or _money(allocation.unallocated_budget) != Decimal("0.00")
+    ):
+        raise GoldenValidationError("GOAL_ALLOCATION_MISMATCH")
+
+    state = result.workflow_state
+    plan = state.agent_state.shopping_plan
+    if (
+        state.route is not WorkflowRoute.READY
+        or plan.status is not PlanStatus.READY
+        or len(plan.requirements) != 3
+        or len(plan.selected_items) != 3
+        or plan.version != 3
+        or plan.is_over_budget
+        or not plan.is_valid
+        or plan.total_spent > GOLDEN_TOTAL_BUDGET
+        or _money(plan.remaining_budget)
+        != _money(GOLDEN_TOTAL_BUDGET - plan.total_spent)
+    ):
+        raise GoldenValidationError("NO_SELECTED_ITEM")
+    if (
+        tuple(value.requirement_id for value in plan.requirements) != expected_ids
+        or tuple(value.category for value in plan.requirements) != expected_categories
+        or tuple(value.requirement_id for value in plan.selected_items) != expected_ids
+    ):
+        raise GoldenValidationError("IDENTITY_MISMATCH")
+
+    provenance = state.selected_recommendation_budget_provenance
+    if len(provenance) != 3:
+        raise GoldenValidationError("PROVENANCE_MISMATCH")
+    for index, value in enumerate(provenance):
+        expected_id, _category, expected_budget = GOLDEN_REQUIREMENTS[index]
+        if (
+            value.requirement_id != expected_id
+            or _money(value.allocated_budget) != _money(expected_budget)
+            or _money(value.effective_subtotal_budget) != _money(expected_budget)
+            or _money(value.derived_unit_max_price) != _money(expected_budget)
+            or value.explicit_max_budget is not None
+            or _money(value.retained_subtotal_before_call) != Decimal("0.00")
+            or value.remaining_quantity_before_call != 1
+            or value.plan_version_before_call != index
+        ):
+            raise GoldenValidationError("PROVENANCE_MISMATCH")
+
+    evidence_by_id = {
+        value.requirement_id: value for value in state.selected_evidence
+    }
+    verification_by_id = {
+        value.requirement_id: value for value in state.selected_verifications
+    }
+    if set(evidence_by_id) != set(expected_ids) or set(verification_by_id) != {
+        "req-001"
+    }:
+        raise GoldenValidationError("IDENTITY_MISMATCH")
+
+    plan_items = {value.requirement_id: value for value in plan.selected_items}
+    for requirement_id, category, expected_cap in GOLDEN_REQUIREMENTS:
+        item = plan_items.get(requirement_id)
+        evidence = evidence_by_id.get(requirement_id)
+        if (
+            item is None
+            or evidence is None
+            or item.requirement_id != requirement_id
+            or item.category != category
+            or item.parent_asin != evidence.parent_asin
+            or not item.parent_asin
+            or not item.title
+            or item.quantity != 1
+            or item.price <= 0
+            or _money(item.price) > _money(expected_cap)
+        ):
+            raise GoldenValidationError("IDENTITY_MISMATCH")
+
+    dock_evidence = evidence_by_id["req-001"]
+    dock_verification = verification_by_id["req-001"]
+    dock_candidate = dock_verification.candidate
+    if (
+        dock_candidate.item_index != dock_evidence.item_index
+        or dock_candidate.parent_asin != dock_evidence.parent_asin
+        or dock_candidate.status is not CandidateVerificationStatus.ELIGIBLE
+        or not any(
+            constraint.status is ConstraintVerificationStatus.SUPPORTED
+            and bool(constraint.supporting_chunk_ids)
+            for constraint in dock_candidate.constraints
+        )
+    ):
+        raise GoldenValidationError("IDENTITY_MISMATCH")
+
+    response = result.final_response
+    if (
+        response.kind is not ResponseKind.READY
+        or not isinstance(response.decision_summary, tuple)
+        or len(response.decision_summary) != 3
+    ):
+        raise GoldenValidationError("RESPONSE_ERROR")
+    for index, summary in enumerate(response.decision_summary):
+        requirement_id = expected_ids[index]
+        item = plan_items[requirement_id]
+        if (
+            summary.requirement_id != requirement_id
+            or summary.parent_asin != item.parent_asin
+        ):
+            raise GoldenValidationError("IDENTITY_MISMATCH")
+        if requirement_id == "req-001":
+            if not any(
+                claim.status is ConstraintVerificationStatus.SUPPORTED
+                and claim.original_constraint == "HDMI"
+                and bool(claim.supporting_evidence)
+                for claim in summary.verified_claims
+            ):
+                raise GoldenValidationError("RESPONSE_ERROR")
+        elif summary.verified_claims:
+            raise GoldenValidationError("RESPONSE_ERROR")
+
+    _section("Golden Goal")
+    print(f"user_id={user_id}")
+    print(f"total_budget={projection.total_budget:.2f}")
+    for requirement in projection.requirements:
+        print(
+            f"requirement={requirement.requirement_id} "
+            f"category={requirement.category} quantity={requirement.quantity} "
+            f"required_features={requirement.required_features}"
+        )
+    print("allocation_preferences=Mice:save_more,Headphones:allocate_more")
+
+    _section("Goal Allocation")
+    category_by_id = {
+        requirement.requirement_id: requirement.category
+        for requirement in projection.requirements
+    }
+    for value in allocation.allocations:
+        print(
+            f"requirement_id={value.requirement_id} "
+            f"category={category_by_id[value.requirement_id]} "
+            f"allocated_budget={value.allocated_budget:.2f}"
+        )
+
+    _section("Selected Bundle")
+    provenance_by_id = {value.requirement_id: value for value in provenance}
+    for requirement_id in expected_ids:
+        item = plan_items[requirement_id]
+        evidence = evidence_by_id[requirement_id]
+        selected_verification = verification_by_id.get(requirement_id)
+        print(f"requirement_id={requirement_id}")
+        print(f"category={item.category}")
+        print(f"item_index={evidence.item_index}")
+        print(f"parent_asin={item.parent_asin}")
+        print(f"title={item.title}")
+        print(f"unit_price={item.price:.2f}")
+        print(f"quantity={item.quantity}")
+        print(f"subtotal={item.price * item.quantity:.2f}")
+        print(
+            "derived_unit_cap="
+            f"{provenance_by_id[requirement_id].derived_unit_max_price:.2f}"
+        )
+        print(
+            "verification_status="
+            + (
+                "not_required"
+                if selected_verification is None
+                else selected_verification.candidate.status.value
+            )
+        )
+
+    _section("Bundle Summary")
+    print(f"total_spent={plan.total_spent:.2f}")
+    print(f"remaining_budget={plan.remaining_budget:.2f}")
+    print(f"plan_status={plan.status.value}")
+    print(f"workflow_route={state.route.value}")
+    print(f"goal_status={result.status.value}")
+    print(f"plan_version={plan.version}")
+
+    _section("Grounded Final Response")
+    print(response.text)
+    return True
+
+
 def main() -> int:
+    process_started = time.perf_counter()
     args = _parse_args()
     project_root = args.project_root.resolve()
     serving_dir = project_root / "artifacts/recommendation/serving_v2"
@@ -544,7 +918,69 @@ def main() -> int:
     )
     if not evidence_pass:
         print(f"failure_reason={_verification_failure_reason(evidence_summary)}")
-    return 0 if all_pass and evidence_pass else 1
+        return 1
+
+    plan_service = ShoppingPlanService()
+    runner = AgentTaskRunner(
+        requirement_extractor=_build_legacy_requirement_extractor(),
+        planner=GoldenDeterministicPlanner(),
+        recommendation_tool=adapter,
+        evidence_service=evidence_runtime.service,
+        verification_service=evidence_runtime.verifier,
+        shopping_plan_service=plan_service,
+        memory_store=None,
+        memory_merger=None,
+        goal_extractor=FakeGoalExtractor(_build_goal_decision()),
+    )
+    goal_started = time.perf_counter()
+    try:
+        result = runner.run_goal(
+            user_id=user_id,
+            session_id="v2-10-5c-3-golden-session",
+            plan_id="v2-10-5c-3-golden-plan",
+            user_request=GOLDEN_REQUEST,
+            currency="USD",
+            recursion_limit=50,
+        )
+    except Exception:
+        goal_execution_seconds = time.perf_counter() - goal_started
+        _section("Golden E2E Summary")
+        print("failure_reason=WORKFLOW_ERROR")
+        print(f"goal_execution_seconds={goal_execution_seconds:.6f}")
+        print(f"total_process_seconds={time.perf_counter() - process_started:.6f}")
+        print("GOLDEN_REAL_BACKEND_E2E_PASS=False")
+        return 1
+    goal_execution_seconds = time.perf_counter() - goal_started
+
+    try:
+        golden_pass = _validate_and_print_golden_result(result, user_id=user_id)
+    except GoldenValidationError as exc:
+        _section("Golden E2E Summary")
+        print(f"failure_reason={exc.code}")
+        print(f"goal_execution_seconds={goal_execution_seconds:.6f}")
+        print(f"total_process_seconds={time.perf_counter() - process_started:.6f}")
+        print("GOLDEN_REAL_BACKEND_E2E_PASS=False")
+        return 1
+
+    state = result.workflow_state
+    assert state is not None
+    plan = state.agent_state.shopping_plan
+    dock_verification = state.selected_verifications[0]
+    dock_hdmi_supported = any(
+        constraint.status is ConstraintVerificationStatus.SUPPORTED
+        for constraint in dock_verification.candidate.constraints
+    )
+    _section("Golden E2E Summary")
+    print(f"selected_requirements={len(plan.requirements)}")
+    print(f"selected_items={len(plan.selected_items)}")
+    print(f"within_budget={not plan.is_over_budget}")
+    print(f"dock_hdmi_supported={dock_hdmi_supported}")
+    print(f"response_grounded={result.final_response is not None}")
+    print(f"goal_execution_seconds={goal_execution_seconds:.6f}")
+    print(f"total_process_seconds={time.perf_counter() - process_started:.6f}")
+    process_pass = all_pass and evidence_pass and golden_pass
+    print(f"GOLDEN_REAL_BACKEND_E2E_PASS={process_pass}")
+    return 0 if process_pass else 1
 
 
 if __name__ == "__main__":
