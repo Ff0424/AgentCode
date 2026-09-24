@@ -47,7 +47,7 @@ class ProbeSpec:
 
 PROBES = (
     ProbeSpec("Docking Stations", 166.67, ("HDMI",)),
-    ProbeSpec("Mouse", 83.33, ()),
+    ProbeSpec("Mice", 83.33, ()),
     ProbeSpec("Headphones", 250.00, ()),
 )
 
