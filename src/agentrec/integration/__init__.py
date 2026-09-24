@@ -11,6 +11,7 @@ from .goal import (
     GoalExecutionStatus,
     PreparedGoalExecution,
 )
+from .workflow_runner import WorkflowRunner
 
 __all__ = [
     "AgentExecutionResult",
@@ -20,4 +21,5 @@ __all__ = [
     "GoalExecutionStatus",
     "PreparedGoalExecution",
     "RequirementInput",
+    "WorkflowRunner",
 ]

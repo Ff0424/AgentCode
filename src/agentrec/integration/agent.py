@@ -35,12 +35,13 @@ from ..response import (
     ResponseErrorCode,
 )
 from ..services import ShoppingPlanService
-from ..workflows import ShoppingWorkflowState, WorkflowRoute, build_shopping_workflow
+from ..workflows import ShoppingWorkflowState, WorkflowRoute
 from .goal import (
     GoalExecutionResult,
     GoalExecutionStatus,
     PreparedGoalExecution,
 )
+from .workflow_runner import WorkflowRunner
 
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -98,6 +99,7 @@ class AgentTaskRunner:
         goal_extractor: Any | None = None,
         goal_projector: Any | None = None,
         budget_allocator: Any | None = None,
+        workflow_runner: WorkflowRunner | None = None,
     ) -> None:
         dependencies = (
             (requirement_extractor, "extract", "requirement_extractor"),
@@ -179,6 +181,19 @@ class AgentTaskRunner:
             raise TypeError("goal_projector must provide project().")
         if not callable(getattr(self._budget_allocator, "allocate", None)):
             raise TypeError("budget_allocator must provide allocate().")
+        self._workflow_runner = (
+            WorkflowRunner(
+                planner=self._planner,
+                recommendation_tool=self._recommendation_tool,
+                evidence_service=self._evidence_service,
+                verification_service=self._verification_service,
+                shopping_plan_service=self._plan_service,
+            )
+            if workflow_runner is None
+            else workflow_runner
+        )
+        if not callable(getattr(self._workflow_runner, "execute", None)):
+            raise TypeError("workflow_runner must provide execute().")
 
     def run_goal(
         self,
@@ -383,15 +398,9 @@ class AgentTaskRunner:
                 # Decision metadata is optional and cannot alter workflow execution.
                 decision_plan = None
 
-        graph = build_shopping_workflow(
-            self._recommendation_tool,
-            self._plan_service,
-            planner=self._planner,
-            evidence_service=self._evidence_service,
-            verification_service=self._verification_service,
-        )
-        output = ShoppingWorkflowState.model_validate(
-            graph.invoke(initial, config={"recursion_limit": recursion_limit})
+        output = self._workflow_runner.execute(
+            initial,
+            recursion_limit=recursion_limit,
         )
         status = {
             WorkflowRoute.READY: AgentExecutionStatus.READY,
