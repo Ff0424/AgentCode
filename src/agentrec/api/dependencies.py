@@ -36,6 +36,12 @@ from ..verification import EvidenceConstraintVerifier
 MODEL = "deepseek-v4-flash"
 
 CATEGORY_ALIASES = {
+    # Common English and Chinese expressions map only to frozen Catalog names.
+    "hdmi扩展坞": "Docking Stations",
+    "扩展坞": "Docking Stations",
+    "拓展坞": "Docking Stations",
+    "dock": "Docking Stations",
+    "docking": "Docking Stations",
     "docking station": "Docking Stations",
     "docking stations": "Docking Stations",
     "mouse": "Mice",
