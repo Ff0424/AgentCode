@@ -187,6 +187,36 @@ def main() -> int:
         recursion_limit=50,
     )
 
+    if result.status is not GoalExecutionStatus.READY:
+        state = result.workflow_state
+        agent_state = None if state is None else state.agent_state
+        route = None if state is None else state.route
+        print("=== Goal Failure Debug ===")
+        print(f"status={result.status.value}")
+        print(f"workflow_route={None if route is None else route.value}")
+        print(
+            "error_state="
+            f"{None if agent_state is None else agent_state.error_state}"
+        )
+        print(
+            "current_requirement_id="
+            f"{None if agent_state is None else agent_state.current_requirement_id}"
+        )
+        print(
+            "selected_parent_asin="
+            f"{None if state is None else state.selected_parent_asin}"
+        )
+        print(f"failure_history={None if state is None else state.failure_history}")
+        print(
+            "current_failure_diagnosis="
+            f"{None if state is None else state.current_failure_diagnosis}"
+        )
+        print(
+            "current_replan_directive="
+            f"{None if state is None else state.current_replan_directive}"
+        )
+        raise AssertionError(f"Expected goal status READY, got {result.status.value}.")
+
     if result.workflow_state is None:
         raise AssertionError(
             f"Goal execution produced no workflow state: status={result.status.value}."
@@ -197,8 +227,6 @@ def main() -> int:
         result.final_response is not None and result.response_error is None
     )
 
-    if result.status is not GoalExecutionStatus.READY:
-        raise AssertionError(f"Expected goal status READY, got {result.status.value}.")
     if state.route is not WorkflowRoute.READY:
         raise AssertionError(f"Expected workflow route READY, got {state.route!r}.")
     if len(plan.requirements) != 3:
