@@ -27,7 +27,9 @@ for import_root in (DEFAULT_PROJECT_ROOT, SRC_DIR):
 from agentrec.evidence import GroundedEvidenceService  # noqa: E402
 from agentrec.integration import AgentTaskRunner, GoalExecutionStatus  # noqa: E402
 from agentrec.planning import (  # noqa: E402
+    GoalRequirementProposal,
     OpenAICompatiblePlannerProvider,
+    ShoppingGoalExtractionDecision,
     StructuredGoalExtractor,
     StructuredLLMPlanner,
     StructuredRequirementExtractor,
@@ -74,6 +76,46 @@ I need a $500 shopping setup with a docking station,
 a mouse, and headphones.
 The docking station must support HDMI.
 Save more on the mouse and spend more on headphones."""
+
+CATEGORY_ALIASES = {
+    "docking station": "Docking Stations",
+    "docking stations": "Docking Stations",
+    "mouse": "Mice",
+    "mice": "Mice",
+    "headphone": "Headphones",
+    "headphones": "Headphones",
+}
+
+
+class NormalizedGoalExtractor:
+    """Normalize extracted categories to the frozen Catalog taxonomy."""
+
+    def __init__(self, extractor: StructuredGoalExtractor) -> None:
+        self._extractor = extractor
+
+    def extract(self, *, user_request: str) -> ShoppingGoalExtractionDecision:
+        decision = self._extractor.extract(user_request=user_request)
+        proposals = tuple(
+            GoalRequirementProposal(
+                category=CATEGORY_ALIASES.get(
+                    " ".join(proposal.category.split()).casefold(),
+                    proposal.category,
+                ),
+                quantity=proposal.quantity,
+                max_budget=proposal.max_budget,
+                required_features=proposal.required_features,
+                soft_preferences=proposal.soft_preferences,
+                priority=proposal.priority,
+            )
+            for proposal in decision.requirement_proposals
+        )
+        return ShoppingGoalExtractionDecision(
+            total_budget=decision.total_budget,
+            requirement_proposals=proposals,
+            allocation_preferences=decision.allocation_preferences,
+            clarification_needed=decision.clarification_needed,
+            clarification_question=decision.clarification_question,
+        )
 
 
 def _parse_args() -> argparse.Namespace:
@@ -156,7 +198,7 @@ def _build_runner(*, project_root: Path, device: str) -> tuple[AgentTaskRunner, 
         evidence_service=GroundedEvidenceService(retriever=retriever),
         verification_service=EvidenceConstraintVerifier(),
         shopping_plan_service=ShoppingPlanService(),
-        goal_extractor=goal_extractor,
+        goal_extractor=NormalizedGoalExtractor(goal_extractor),
     )
     return runner, user_id
 
