@@ -20,8 +20,9 @@ from pathlib import Path
 SCRIPT_PATH = Path(__file__).resolve()
 DEFAULT_PROJECT_ROOT = SCRIPT_PATH.parents[1]
 SRC_DIR = DEFAULT_PROJECT_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
+for import_root in (DEFAULT_PROJECT_ROOT, SRC_DIR):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from agentrec.evidence import GroundedEvidenceService  # noqa: E402
 from agentrec.integration import AgentTaskRunner, GoalExecutionStatus  # noqa: E402
