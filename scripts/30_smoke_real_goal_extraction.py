@@ -28,7 +28,30 @@ from agentrec.planning import (  # noqa: E402
 
 
 MODEL = "deepseek-v4-flash"
-REQUEST = """I need a $500 shopping setup with a docking station,
+REQUEST = """Return JSON only. Follow this exact schema and exact field names:
+{
+  "total_budget": number,
+  "requirement_proposals": [
+    {
+      "category": string,
+      "quantity": integer,
+      "required_features": []
+    }
+  ],
+  "allocation_preferences": [
+    {
+      "target_index": integer,
+      "preference": string
+    }
+  ],
+  "clarification_needed": boolean,
+  "clarification_question": string or null
+}
+Do not add extra fields. Do not rename any field. In particular, use
+"requirement_proposals", never "ordered_requirement_proposals".
+
+User request:
+I need a $500 shopping setup with a docking station,
 a mouse, and headphones.
 The docking station must support HDMI.
 Save more on the mouse and spend more on headphones."""
