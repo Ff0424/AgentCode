@@ -190,10 +190,14 @@ async function sendMessage() {
   setLoading(true);
 
   try {
-    const response = await fetch("/api/chat", {
+    const response = await fetch("/api/v1/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: userMessage }),
+      body: JSON.stringify({
+        user_id: "demo-user",
+        session_id: "web-demo",
+        query: userMessage,
+      }),
     });
 
     let payload;
@@ -208,7 +212,7 @@ async function sendMessage() {
       console.error("AgentRec backend error:", payload?.detail ?? response.status);
       throw new Error(`HTTP ${response.status}`);
     }
-    if (typeof payload.answer !== "string" || !payload.answer.trim()) {
+    if (typeof payload.response !== "string" || !payload.response.trim()) {
       console.error("AgentRec response contained no answer.", payload);
       throw new Error("Missing answer");
     }
@@ -222,7 +226,7 @@ async function sendMessage() {
     void debugMetadata;
 
     setLoading(false);
-    addMessage("agent", payload.answer);
+    addMessage("agent", payload.response);
   } catch (error) {
     console.error("AgentRec request failed:", error);
     setLoading(false);
