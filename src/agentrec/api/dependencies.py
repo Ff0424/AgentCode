@@ -46,8 +46,10 @@ CATEGORY_ALIASES = {
     "docking stations": "Docking Stations",
     "mouse": "Mice",
     "mice": "Mice",
+    "鼠标": "Mice",
     "headphone": "Headphones",
     "headphones": "Headphones",
+    "耳机": "Headphones",
 }
 
 _REQUIREMENT_PROPOSAL_ALIASES = (
