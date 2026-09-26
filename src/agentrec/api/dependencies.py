@@ -120,20 +120,26 @@ class NormalizedGoalExtractor:
 
     def extract(self, *, user_request: str) -> ShoppingGoalExtractionDecision:
         decision = self._extractor.extract(user_request=user_request)
-        proposals = tuple(
-            GoalRequirementProposal(
-                category=CATEGORY_ALIASES.get(
-                    " ".join(proposal.category.split()).casefold(),
-                    proposal.category,
-                ),
-                quantity=proposal.quantity,
-                max_budget=proposal.max_budget,
-                required_features=proposal.required_features,
-                soft_preferences=proposal.soft_preferences,
-                priority=proposal.priority,
+        normalized_proposals = []
+        for proposal in decision.requirement_proposals:
+            print("[Goal Category Debug]")
+            print(f"raw_category={proposal.category}")
+            normalized_category = CATEGORY_ALIASES.get(
+                " ".join(proposal.category.split()).casefold(),
+                proposal.category,
             )
-            for proposal in decision.requirement_proposals
-        )
+            print(f"normalized_category={normalized_category}")
+            normalized_proposals.append(
+                GoalRequirementProposal(
+                    category=normalized_category,
+                    quantity=proposal.quantity,
+                    max_budget=proposal.max_budget,
+                    required_features=proposal.required_features,
+                    soft_preferences=proposal.soft_preferences,
+                    priority=proposal.priority,
+                )
+            )
+        proposals = tuple(normalized_proposals)
         return ShoppingGoalExtractionDecision(
             total_budget=decision.total_budget,
             requirement_proposals=proposals,
