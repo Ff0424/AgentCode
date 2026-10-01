@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, StringConstraints
+from pydantic import BaseModel, ConfigDict, StringConstraints
 
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class ErrorCode(str, Enum):
+    """Stable public error categories exposed by the HTTP boundary."""
+
+    PROVIDER_TIMEOUT = "provider_timeout"
+    PROVIDER_INVALID_RESPONSE = "provider_invalid_response"
+    PROVIDER_UNAVAILABLE = "provider_unavailable"
+    AGENT_EXECUTION_FAILED = "agent_execution_failed"
+    INTERNAL_ERROR = "internal_error"
+
+
+class ErrorResponse(BaseModel):
+    """Safe error envelope that never carries internal exception details."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: Literal["error"] = "error"
+    error_code: ErrorCode
+    message: NonEmptyText
 
 
 class ChatRequest(BaseModel):

@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ..integration import GoalExecutionResult, GoalExecutionStatus
+from ..planning import PlannerProviderError, PlannerSchemaError, PlannerTimeoutError
 from ..response import ConflictDecisionSummary, ProductDecisionSummary
 from .dependencies import AgentRuntime, build_runtime
 from .schemas import (
@@ -19,6 +21,8 @@ from .schemas import (
     ChatResponse,
     ClarificationResponse,
     ConflictResponse,
+    ErrorCode,
+    ErrorResponse,
     PlanResponse,
     ProductResponse,
     RequirementResponse,
@@ -29,6 +33,21 @@ from .schemas import (
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 WEB_DIR = PROJECT_ROOT / "web"
 DEVICE = "cuda:0"
+logger = logging.getLogger(__name__)
+
+_ERROR_MESSAGES: dict[ErrorCode, str] = {
+    ErrorCode.PROVIDER_TIMEOUT: "The AI provider timed out. Please try again.",
+    ErrorCode.PROVIDER_INVALID_RESPONSE: (
+        "The AI provider returned an invalid response. Please try again."
+    ),
+    ErrorCode.PROVIDER_UNAVAILABLE: (
+        "The AI provider is temporarily unavailable. Please try again."
+    ),
+    ErrorCode.AGENT_EXECUTION_FAILED: (
+        "The shopping task could not be completed. Please try again."
+    ),
+    ErrorCode.INTERNAL_ERROR: "An internal error occurred. Please try again.",
+}
 
 
 @asynccontextmanager
@@ -245,18 +264,93 @@ def _project_chat_response(result: GoalExecutionResult) -> ChatResponse:
     )
 
 
-@app.post("/api/v1/chat", response_model=ChatResponse)
+def _build_error_response(
+    *,
+    status_code: int,
+    error_code: ErrorCode,
+) -> JSONResponse:
+    """Build a fixed-message public error without projecting exception data."""
+
+    payload = ErrorResponse(
+        error_code=error_code,
+        message=_ERROR_MESSAGES[error_code],
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=payload.model_dump(mode="json"),
+    )
+
+
+@app.post(
+    "/api/v1/chat",
+    response_model=ChatResponse,
+    responses={
+        500: {"model": ErrorResponse},
+        502: {"model": ErrorResponse},
+        504: {"model": ErrorResponse},
+    },
+)
 def chat(
     request: ChatRequest,
     runtime: AgentRuntime = Depends(get_runtime),
-) -> ChatResponse:
+) -> ChatResponse | JSONResponse:
     """Execute one shopping goal through the shared Agent runtime."""
 
     effective_user_id = request.user_id or runtime.default_user_id
-    result = runtime.runner.run_goal(
-        user_id=effective_user_id,
-        session_id=request.session_id,
-        plan_id=f"api-{uuid4()}",
-        user_request=request.query,
-    )
-    return _project_chat_response(result)
+    plan_id = f"api-{uuid4()}"
+    try:
+        result = runtime.runner.run_goal(
+            user_id=effective_user_id,
+            session_id=request.session_id,
+            plan_id=plan_id,
+            user_request=request.query,
+        )
+        if result.status is GoalExecutionStatus.ERROR:
+            error_code = ErrorCode.AGENT_EXECUTION_FAILED
+            logger.error(
+                "AgentRec chat failed plan_id=%s error_code=%s failure_type=%s",
+                plan_id,
+                error_code.value,
+                "GoalExecutionStatus.ERROR",
+            )
+            return _build_error_response(
+                status_code=500,
+                error_code=error_code,
+            )
+        return _project_chat_response(result)
+    except PlannerTimeoutError as exc:
+        error_code = ErrorCode.PROVIDER_TIMEOUT
+        logger.warning(
+            "AgentRec chat failed plan_id=%s error_code=%s exception_type=%s",
+            plan_id,
+            error_code.value,
+            type(exc).__name__,
+        )
+        return _build_error_response(status_code=504, error_code=error_code)
+    except PlannerSchemaError as exc:
+        error_code = ErrorCode.PROVIDER_INVALID_RESPONSE
+        logger.warning(
+            "AgentRec chat failed plan_id=%s error_code=%s exception_type=%s",
+            plan_id,
+            error_code.value,
+            type(exc).__name__,
+        )
+        return _build_error_response(status_code=502, error_code=error_code)
+    except PlannerProviderError as exc:
+        error_code = ErrorCode.PROVIDER_UNAVAILABLE
+        logger.warning(
+            "AgentRec chat failed plan_id=%s error_code=%s exception_type=%s",
+            plan_id,
+            error_code.value,
+            type(exc).__name__,
+        )
+        return _build_error_response(status_code=502, error_code=error_code)
+    except Exception as exc:
+        error_code = ErrorCode.INTERNAL_ERROR
+        logger.exception(
+            "AgentRec chat failed plan_id=%s error_code=%s exception_type=%s",
+            plan_id,
+            error_code.value,
+            type(exc).__name__,
+        )
+        return _build_error_response(status_code=500, error_code=error_code)
