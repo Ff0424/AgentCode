@@ -48,6 +48,25 @@ EXPECTED_CASE_IDS = {
     "e2e_fallback_001",
 }
 
+APPROVED_CASE_IDS = {
+    "goal_zh_single_001",
+    "goal_en_multi_001",
+    "goal_mixed_multi_001",
+    "goal_zh_quantity_001",
+    "goal_en_missing_budget_001",
+    "goal_zh_ambiguous_budget_001",
+    "goal_en_soft_pref_001",
+    "goal_mixed_wrapper_001",
+    "goal_zh_unresolved_001",
+    "grounding_wrappers_001",
+    "grounding_unresolved_001",
+    "allocation_multi_001",
+    "tool_args_budget_001",
+    "pipeline_identity_001",
+}
+
+PENDING_TRACK_C_IDS = EXPECTED_CASE_IDS - APPROVED_CASE_IDS
+
 
 def _load_raw_lines() -> tuple[str, ...]:
     return tuple(
@@ -74,6 +93,10 @@ class CuratedBenchmarkV1PilotTests(unittest.TestCase):
             manifest["track_counts"],
             {"track_a": 9, "track_b": 5, "track_c": 6},
         )
+        self.assertEqual(
+            manifest["annotation_counts"],
+            {"approved": 14, "pending": 6, "disputed": 0},
+        )
         self.assertFalse(manifest["blind_test"])
 
     def test_jsonl_has_exactly_approved_unique_cases(self) -> None:
@@ -90,14 +113,30 @@ class CuratedBenchmarkV1PilotTests(unittest.TestCase):
                 restored = EvaluationCase.model_validate_json(case.model_dump_json())
                 self.assertEqual(restored, case)
 
-    def test_all_cases_are_pending_development_annotations(self) -> None:
+    def test_reviewed_and_pending_statuses_match_track_boundaries(self) -> None:
         for case in _load_cases():
             with self.subTest(case_id=case.case_id):
                 self.assertIs(case.split, EvaluationSplit.DEVELOPMENT)
+                expected = (
+                    AdjudicationStatus.APPROVED
+                    if case.case_id in APPROVED_CASE_IDS
+                    else AdjudicationStatus.PENDING
+                )
+                self.assertIs(case.annotation_metadata.adjudication_status, expected)
+
+    def test_track_c_truth_remains_empty_and_pending(self) -> None:
+        cases_by_id = {case.case_id: case for case in _load_cases()}
+        self.assertEqual(set(cases_by_id) - APPROVED_CASE_IDS, PENDING_TRACK_C_IDS)
+        self.assertEqual(len(PENDING_TRACK_C_IDS), 6)
+        for case_id in PENDING_TRACK_C_IDS:
+            with self.subTest(case_id=case_id):
+                case = cases_by_id[case_id]
                 self.assertIs(
                     case.annotation_metadata.adjudication_status,
                     AdjudicationStatus.PENDING,
                 )
+                self.assertEqual(case.independent_product_truth, ())
+                self.assertEqual(case.evidence_annotations, ())
 
     def test_track_counts_match_approved_matrix(self) -> None:
         counts = {"track_a": 0, "track_b": 0, "track_c": 0}

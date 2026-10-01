@@ -2,13 +2,23 @@
   "benchmark_name": "AgentRec Curated Benchmark V1 Pilot",
   "benchmark_version": "0.1.0-pilot",
   "schema_version": "1.0",
-  "status": "annotation_pending",
+  "status": "partial_annotation_approval",
   "case_count": 20,
   "split": "development",
   "track_counts": {
     "track_a": 9,
     "track_b": 5,
     "track_c": 6
+  },
+  "annotation_counts": {
+    "approved": 14,
+    "pending": 6,
+    "disputed": 0
+  },
+  "track_annotation_status": {
+    "track_a": "approved",
+    "track_b": "approved",
+    "track_c": "pending_artifact_review"
   },
   "created_for": "annotation and schema validation before scorer and runner implementation",
   "blind_test": false

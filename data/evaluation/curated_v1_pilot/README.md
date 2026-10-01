@@ -27,7 +27,9 @@ no Base-versus-LoRA conclusion.
   fallback. Product and evidence annotations remain empty until independent
   artifact review.
 
-Every case is in the `development` split and has `pending` adjudication status.
+Every case is in the `development` split. The nine Track A and five Track B
+cases passed the Stage 5.3.3a manual semantic/reference review and are
+`approved`. The six Track C cases remain `pending` artifact adjudication.
 
 ## Loading
 
@@ -46,10 +48,12 @@ outcome.
 
 ## Current annotation status
 
-All 20 records are schema-complete drafts but remain pending human
-adjudication. Track C product truth, evidence truth, backend feasibility,
-re-plan recovery, and fallback outcome require independent artifact review.
-They must not be filled from current Recommendation or Verifier output.
+All 20 records are schema-complete. Four annotation corrections were made in
+Stage 5.3.3a: one explicit soft-preference projection and three Track B fixture
+descriptions were aligned with their already-reviewed expected goals. Track C
+product truth, evidence truth, backend feasibility, re-plan recovery, and
+fallback outcome remain pending independent artifact review. They must not be
+filled from current Recommendation or Verifier output.
 
 ## Expansion
 
