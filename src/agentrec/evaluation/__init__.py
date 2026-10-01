@@ -31,6 +31,21 @@ from .contracts import (
     RuntimeProfile,
     VerificationTruthStatus,
 )
+from .inspection import (
+    CandidateEvidenceInspection,
+    CandidateInspection,
+    CaseArtifactInspection,
+    CatalogFact,
+    EvidenceSnippetInspection,
+    IdentityInspection,
+    InspectionRequirement,
+    RecommendationInspection,
+    RequirementArtifactInspection,
+    TRACK_C_CASE_IDS,
+    TrackCArtifactInspectionReport,
+    TrackCArtifactInspector,
+    select_track_c_cases,
+)
 
 __all__ = [
     "AdjudicationStatus",
@@ -62,4 +77,17 @@ __all__ = [
     "RetryPolicy",
     "RuntimeProfile",
     "VerificationTruthStatus",
+    "CandidateEvidenceInspection",
+    "CandidateInspection",
+    "CaseArtifactInspection",
+    "CatalogFact",
+    "EvidenceSnippetInspection",
+    "IdentityInspection",
+    "InspectionRequirement",
+    "RecommendationInspection",
+    "RequirementArtifactInspection",
+    "TRACK_C_CASE_IDS",
+    "TrackCArtifactInspectionReport",
+    "TrackCArtifactInspector",
+    "select_track_c_cases",
 ]
