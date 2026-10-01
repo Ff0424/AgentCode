@@ -164,7 +164,7 @@ h3 { margin-bottom: 0; font-size: 15px; }
 
 .messages,
 .plan-content {
-  height: 516px;
+  height: clamp(480px, calc(100vh - 390px), 650px);
   overflow-y: auto;
   scroll-behavior: smooth;
 }
@@ -331,7 +331,6 @@ h3 { margin-bottom: 0; font-size: 15px; }
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .requirement-status {
@@ -405,14 +404,14 @@ h3 { margin-bottom: 0; font-size: 15px; }
 .conflict-panel p { margin-bottom: 9px; font-size: 13px; line-height: 1.5; }
 .conflict-list { margin: 6px 0 0; padding-left: 18px; font-size: 12px; line-height: 1.5; }
 
-.composer-section { margin-top: 16px; padding: 15px 17px 13px; }
+.composer-section { margin-top: 12px; padding: 11px 14px 9px; }
 
 .examples {
   display: flex;
   flex-wrap: wrap;
   gap: 7px;
   align-items: center;
-  padding-bottom: 12px;
+  padding-bottom: 8px;
 }
 
 .examples-label { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-weight: 750; }
@@ -453,11 +452,11 @@ h3 { margin-bottom: 0; font-size: 15px; }
 
 textarea {
   width: 100%;
-  min-height: 50px;
+  min-height: 42px;
   max-height: 150px;
   resize: none;
   border: 0;
-  padding: 8px 9px;
+  padding: 6px 8px;
   color: var(--ink);
   background: transparent;
   line-height: 1.45;

@@ -126,7 +126,10 @@ def _ready_result() -> SimpleNamespace:
         status=GoalExecutionStatus.READY,
         final_response=FinalResponseResult(
             kind=ResponseKind.READY,
-            text="Grounded ready response",
+            text=(
+                "Grounded Dock P-DOCK quantity 2 USD 40.00 HDMI; "
+                "total 80.00 remaining 20.00"
+            ),
             decision_summary=(summary,),
         ),
         workflow_state=_workflow_state(ready=True),
@@ -158,6 +161,17 @@ class APIProjectionTests(unittest.TestCase):
         response = _project_chat_response(_ready_result())
 
         self.assertEqual(response.status, "ready")
+        self.assertIn("Grounded Dock", response.response)
+        self.assertIn("P-DOCK", response.response)
+        self.assertIn("USD 40.00", response.response)
+        self.assertIsNotNone(response.conversation_summary)
+        self.assertIn("1 项需求均已满足", response.conversation_summary)
+        self.assertNotIn("Grounded Dock", response.conversation_summary)
+        self.assertNotIn("P-DOCK", response.conversation_summary)
+        self.assertNotIn("40.0", response.conversation_summary)
+        self.assertNotIn("80.0", response.conversation_summary)
+        self.assertNotIn("USD", response.conversation_summary)
+        self.assertNotIn("HDMI", response.conversation_summary)
         self.assertIsNone(response.clarification)
         self.assertIsNone(response.conflict)
         self.assertEqual(response.plan.total_budget, 100.0)
@@ -182,6 +196,7 @@ class APIProjectionTests(unittest.TestCase):
 
         self.assertEqual(response.status, "clarification_required")
         self.assertIsNone(response.response)
+        self.assertIsNone(response.conversation_summary)
         self.assertEqual(
             response.clarification.question,
             "What is your total budget?",
@@ -214,6 +229,8 @@ class APIProjectionTests(unittest.TestCase):
         response = _project_chat_response(result)
 
         self.assertEqual(response.status, "conflict")
+        self.assertEqual(response.response, "Grounded conflict response")
+        self.assertIsNone(response.conversation_summary)
         self.assertEqual(response.conflict.reason, "no_recommendation_candidates")
         self.assertEqual(response.conflict.replan_attempts_performed, 1)
         self.assertTrue(response.conflict.user_action_required)
@@ -235,6 +252,7 @@ class APIProjectionTests(unittest.TestCase):
 
         self.assertEqual(response.status, "error")
         self.assertIsNone(response.response)
+        self.assertIsNone(response.conversation_summary)
         self.assertIsNone(response.plan)
         self.assertEqual(response.requirements, [])
         self.assertEqual(response.products, [])

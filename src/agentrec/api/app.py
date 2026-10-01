@@ -90,6 +90,7 @@ def _project_chat_response(result: GoalExecutionResult) -> ChatResponse:
         return ChatResponse(
             status=result.status.value,
             response=response_text,
+            conversation_summary=None,
             clarification=clarification,
             plan=None,
             requirements=[],
@@ -103,6 +104,7 @@ def _project_chat_response(result: GoalExecutionResult) -> ChatResponse:
         return ChatResponse(
             status=result.status.value,
             response=None,
+            conversation_summary=None,
             clarification=None,
             plan=None,
             requirements=[],
@@ -115,6 +117,7 @@ def _project_chat_response(result: GoalExecutionResult) -> ChatResponse:
         return ChatResponse(
             status=result.status.value,
             response=response_text,
+            conversation_summary=None,
             clarification=None,
             plan=None,
             requirements=[],
@@ -204,9 +207,30 @@ def _project_chat_response(result: GoalExecutionResult) -> ChatResponse:
             user_action_required=decision.user_action_required,
         )
 
+    conversation_summary = None
+    if result.status is GoalExecutionStatus.READY:
+        satisfied_count = sum(
+            requirement.status.value == "satisfied"
+            for requirement in shopping_plan.requirements
+        )
+        requirement_count = len(shopping_plan.requirements)
+        if satisfied_count == requirement_count:
+            requirement_summary = f"{requirement_count} 项需求均已满足"
+        else:
+            # READY invariants normally make this branch unreachable, but the
+            # Web projection must never overstate facts from an inconsistent stub.
+            requirement_summary = (
+                f"已满足 {satisfied_count}/{requirement_count} 项需求"
+            )
+        conversation_summary = (
+            f"购物方案已准备完成，{requirement_summary}。"
+            "详细商品和预算见右侧购物方案。"
+        )
+
     return ChatResponse(
         status=result.status.value,
         response=response_text,
+        conversation_summary=conversation_summary,
         clarification=None,
         plan=PlanResponse(
             status=shopping_plan.status.value,

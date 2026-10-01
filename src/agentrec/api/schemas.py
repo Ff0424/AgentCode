@@ -87,6 +87,7 @@ class ChatResponse(BaseModel):
 
     status: str
     response: str | None
+    conversation_summary: str | None
     clarification: ClarificationResponse | None
     plan: PlanResponse | None
     requirements: list[RequirementResponse]

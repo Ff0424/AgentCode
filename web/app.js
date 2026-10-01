@@ -16,6 +16,12 @@ const promptChips = Array.from(document.querySelectorAll(".prompt-chip"));
 
 const FRIENDLY_ERROR =
   "Sorry, AgentRec could not complete this request. Please try again.";
+const FRIENDLY_READY =
+  "Your shopping plan is ready. Review the selected products and budget on the right.";
+const FRIENDLY_CLARIFICATION =
+  "Please provide the missing information so I can build your shopping plan.";
+const FRIENDLY_CONFLICT =
+  "The current shopping requirements need adjustment. Review the plan details on the right.";
 
 const STATUS_LABELS = {
   ready: "Ready",
@@ -493,24 +499,36 @@ async function sendMessage() {
       throw new Error(`HTTP ${response.status}`);
     }
 
-    let assistantText = payload.response;
-    if (
-      (typeof assistantText !== "string" || !assistantText.trim()) &&
-      payload.status === "clarification_required" &&
-      typeof payload.clarification?.question === "string" &&
-      payload.clarification.question.trim()
-    ) {
-      assistantText = payload.clarification.question;
-    }
-    if (
-      (typeof assistantText !== "string" || !assistantText.trim()) &&
-      payload.status === "error"
-    ) {
-      assistantText = FRIENDLY_ERROR;
-    }
-    if (typeof assistantText !== "string" || !assistantText.trim()) {
-      console.error("AgentRec response contained no displayable answer.", payload);
-      throw new Error("Missing answer");
+    let assistantText;
+    switch (payload.status) {
+      case "ready":
+        assistantText =
+          typeof payload.conversation_summary === "string" &&
+          payload.conversation_summary.trim()
+            ? payload.conversation_summary
+            : typeof payload.response === "string" && payload.response.trim()
+              ? payload.response
+              : FRIENDLY_READY;
+        break;
+      case "clarification_required":
+        assistantText =
+          typeof payload.clarification?.question === "string" &&
+          payload.clarification.question.trim()
+            ? payload.clarification.question
+            : FRIENDLY_CLARIFICATION;
+        break;
+      case "conflict":
+        assistantText =
+          typeof payload.response === "string" && payload.response.trim()
+            ? payload.response
+            : FRIENDLY_CONFLICT;
+        break;
+      case "error":
+        assistantText = FRIENDLY_ERROR;
+        break;
+      default:
+        console.error("AgentRec returned an unsupported status.", payload.status);
+        assistantText = FRIENDLY_ERROR;
     }
 
     setLoading(false);
