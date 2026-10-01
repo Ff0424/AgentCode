@@ -241,7 +241,6 @@ async function sendMessage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        user_id: "demo-user",
         session_id: "web-demo",
         query: userMessage,
       }),

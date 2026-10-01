@@ -8,12 +8,15 @@ from pathlib import Path
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from .dependencies import AgentRuntime, build_runtime
 from .schemas import ChatRequest, ChatResponse, ProductResponse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+WEB_DIR = PROJECT_ROOT / "web"
 DEVICE = "cuda:0"
 
 
@@ -33,6 +36,7 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
 def get_runtime(request: Request) -> AgentRuntime:
@@ -42,6 +46,13 @@ def get_runtime(request: Request) -> AgentRuntime:
     if not isinstance(runtime, AgentRuntime):
         raise RuntimeError("AgentRuntime has not been initialized.")
     return runtime
+
+
+@app.get("/", response_class=FileResponse)
+def web_demo() -> FileResponse:
+    """Serve the existing same-origin AgentRec Web Demo."""
+
+    return FileResponse(WEB_DIR / "index.html")
 
 
 @app.get("/health")
@@ -61,8 +72,9 @@ def chat(
 ) -> ChatResponse:
     """Execute one shopping goal through the shared Agent runtime."""
 
+    effective_user_id = request.user_id or runtime.default_user_id
     result = runtime.runner.run_goal(
-        user_id=request.user_id,
+        user_id=effective_user_id,
         session_id=request.session_id,
         plan_id=f"api-{uuid4()}",
         user_request=request.query,

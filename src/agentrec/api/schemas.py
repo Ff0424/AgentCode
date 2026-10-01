@@ -13,7 +13,7 @@ NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_lengt
 class ChatRequest(BaseModel):
     """One user chat request received by the API boundary."""
 
-    user_id: NonEmptyText
+    user_id: NonEmptyText | None = None
     session_id: NonEmptyText
     query: NonEmptyText
 

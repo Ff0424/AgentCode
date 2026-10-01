@@ -124,13 +124,10 @@ class NormalizedGoalExtractor:
         decision = self._extractor.extract(user_request=user_request)
         normalized_proposals = []
         for proposal in decision.requirement_proposals:
-            print("[Goal Category Debug]")
-            print(f"raw_category={proposal.category}")
             normalized_category = CATEGORY_ALIASES.get(
                 " ".join(proposal.category.split()).casefold(),
                 proposal.category,
             )
-            print(f"normalized_category={normalized_category}")
             normalized_proposals.append(
                 GoalRequirementProposal(
                     category=normalized_category,
