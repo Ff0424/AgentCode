@@ -258,7 +258,16 @@ async function sendMessage() {
       console.error("AgentRec backend error:", payload?.detail ?? response.status);
       throw new Error(`HTTP ${response.status}`);
     }
-    if (typeof payload.response !== "string" || !payload.response.trim()) {
+    let assistantText = payload.response;
+    if (
+      (typeof assistantText !== "string" || !assistantText.trim()) &&
+      payload.status === "clarification_required" &&
+      typeof payload.clarification?.question === "string" &&
+      payload.clarification.question.trim()
+    ) {
+      assistantText = payload.clarification.question;
+    }
+    if (typeof assistantText !== "string" || !assistantText.trim()) {
       console.error("AgentRec response contained no answer.", payload);
       throw new Error("Missing answer");
     }
@@ -272,11 +281,11 @@ async function sendMessage() {
     void debugMetadata;
 
     setLoading(false);
-    const assistantMessage = addMessage("agent", payload.response);
+    const assistantMessage = addMessage("agent", assistantText);
     appendProductResults(
       assistantMessage,
       payload.products,
-      payload.remaining_budget,
+      payload.plan?.remaining_budget,
     );
   } catch (error) {
     console.error("AgentRec request failed:", error);
