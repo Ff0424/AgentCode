@@ -3,78 +3,98 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="AgentRec AI shopping decision assistant demo">
-  <title>AgentRec · AI Shopping Decision Assistant</title>
+  <meta name="description" content="AgentRec stateful AI shopping agent demo">
+  <title>AgentRec · Stateful AI Shopping Agent</title>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <div class="page-shell">
-    <header class="site-header">
-      <div class="brand-mark" aria-hidden="true">AR</div>
-      <div>
-        <p class="eyebrow">AgentRec</p>
-        <h1>AI Shopping Decision Assistant</h1>
-        <p class="subtitle">
-          Semantic retrieval, recommendation, RAG and LLM-powered shopping assistance.
-        </p>
+    <header class="app-header">
+      <div class="brand-lockup">
+        <div class="brand-mark" aria-hidden="true">AR</div>
+        <div>
+          <p class="eyebrow">AgentRec</p>
+          <h1>Stateful AI Shopping Agent</h1>
+          <p class="subtitle">Personalized recommendations grounded in product evidence.</p>
+        </div>
       </div>
+      <span id="agent-status-badge" class="status-badge" hidden></span>
     </header>
 
-    <main class="chat-card" aria-label="AgentRec conversation">
-      <section
-        id="messages"
-        class="messages"
-        aria-live="polite"
-        aria-busy="false"
-      >
-        <article class="message message-agent">
-          <div class="message-label">AgentRec</div>
-          <div class="message-bubble">
-            Hi! I’m AgentRec. Tell me what kind of electronics you’re looking for,
-            including preferences such as price, use case, or desired features.
+    <main class="workspace">
+      <section class="workspace-panel conversation-panel" aria-labelledby="conversation-title">
+        <header class="panel-header">
+          <div>
+            <p class="panel-kicker">Assistant</p>
+            <h2 id="conversation-title">Conversation</h2>
           </div>
-        </article>
-      </section>
-
-      <section class="composer-section" aria-label="Write a message">
-        <div class="examples" aria-label="Example prompts">
-          <span class="examples-label">Try an example</span>
-          <button class="prompt-chip" type="button">
-            Recommend a USB-C hub under $50 with HDMI and ethernet.
-          </button>
-          <button class="prompt-chip" type="button">
-            I need a portable Bluetooth speaker for camping.
-          </button>
-          <button class="prompt-chip" type="button">
-            Find a dash camera with GPS and night vision.
-          </button>
-        </div>
-
-        <form id="chat-form" class="composer">
-          <label class="sr-only" for="message-input">Shopping request</label>
-          <textarea
-            id="message-input"
-            name="message"
-            rows="2"
-            maxlength="4000"
-            placeholder="Describe the electronics you’re looking for…"
-            autocomplete="off"
-          ></textarea>
-          <button id="send-button" class="send-button" type="submit">
-            <span>Send</span>
-            <span aria-hidden="true">→</span>
-          </button>
-        </form>
-        <div class="composer-meta">
-          <span id="input-status" role="status">Enter to send · Shift + Enter for a new line</span>
-          <span id="character-count">0 / 4000</span>
+          <span class="panel-note">Grounded response</span>
+        </header>
+        <div id="messages" class="messages" aria-live="polite" aria-busy="false">
+          <article class="message message-agent">
+            <div class="message-label">AgentRec</div>
+            <div class="message-bubble">
+              Tell me what you need to buy, your total budget, and any must-have
+              features. I’ll build a grounded shopping plan.
+            </div>
+          </article>
         </div>
       </section>
+
+      <aside class="workspace-panel plan-panel" aria-labelledby="plan-title">
+        <header class="panel-header">
+          <div>
+            <p class="panel-kicker">Workspace</p>
+            <h2 id="plan-title">Shopping Plan</h2>
+          </div>
+          <span class="panel-note">Verified facts only</span>
+        </header>
+        <div id="shopping-plan-content" class="plan-content" aria-live="polite">
+          <div class="plan-empty-state">
+            <div class="empty-state-icon" aria-hidden="true">＋</div>
+            <p>Your shopping plan will appear here.</p>
+            <span>Start with a goal, budget, and the products you need.</span>
+          </div>
+        </div>
+      </aside>
     </main>
 
-    <footer>
-      Catalog-grounded answers for demonstration purposes.
-    </footer>
+    <section class="composer-section" aria-label="Shopping goal composer">
+      <div class="examples" aria-label="Example prompts">
+        <span class="examples-label">Try an example</span>
+        <button class="prompt-chip" type="button">
+          我需要500美元购买办公设备，包括HDMI扩展坞、鼠标和耳机
+        </button>
+        <button class="prompt-chip" type="button">
+          I need a $500 setup with a docking station, mouse, and headphones. The dock must support HDMI.
+        </button>
+        <button class="prompt-chip" type="button">
+          Recommend a USB-C hub under $50 with HDMI and ethernet.
+        </button>
+      </div>
+
+      <form id="chat-form" class="composer">
+        <label class="sr-only" for="message-input">Shopping goal</label>
+        <textarea
+          id="message-input"
+          name="message"
+          rows="2"
+          maxlength="4000"
+          placeholder="Describe your shopping goal, budget, and must-have features…"
+          autocomplete="off"
+        ></textarea>
+        <button id="send-button" class="send-button" type="submit">
+          <span>Build plan</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      </form>
+      <div class="composer-meta">
+        <span id="input-status" role="status">Enter to send · Shift + Enter for a new line</span>
+        <span id="character-count">0 / 4000</span>
+      </div>
+    </section>
+
+    <footer>Catalog-grounded recommendations for demonstration purposes.</footer>
   </div>
 
   <script src="/static/app.js" defer></script>
