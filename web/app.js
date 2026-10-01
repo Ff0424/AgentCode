@@ -135,6 +135,53 @@ function addMessage(role, text, options = {}) {
   return article;
 }
 
+function appendProductResults(message, products, remainingBudget) {
+  if (!Array.isArray(products)) return;
+
+  const section = document.createElement("section");
+  const list = document.createElement("ul");
+  section.className = "product-results";
+  section.setAttribute("aria-label", "Recommended products");
+  list.className = "product-results-list";
+
+  products.forEach((product) => {
+    if (!product || typeof product !== "object") return;
+
+    const item = document.createElement("li");
+    const category = document.createElement("div");
+    const title = document.createElement("div");
+    const parentAsin = document.createElement("div");
+    const price = document.createElement("div");
+
+    item.className = "product-result";
+    category.textContent = `Category: ${String(product.category ?? "")}`;
+    title.textContent = `Title: ${String(product.title ?? "")}`;
+    parentAsin.textContent = `Product ID: ${String(product.parent_asin ?? "")}`;
+    price.textContent = `Price: ${
+      typeof product.price === "number" && Number.isFinite(product.price)
+        ? `$${product.price.toFixed(2)}`
+        : String(product.price ?? "")
+    }`;
+
+    item.append(category, title, parentAsin, price);
+    list.append(item);
+  });
+
+  section.append(list);
+  if (
+    typeof remainingBudget === "number" &&
+    Number.isFinite(remainingBudget)
+  ) {
+    const budget = document.createElement("p");
+    budget.className = "remaining-budget";
+    budget.textContent = `Remaining Budget: $${remainingBudget.toFixed(2)}`;
+    section.append(budget);
+  }
+
+  message.append(section);
+  scrollToBottom();
+}
+
 
 // ============================================================
 // 2. Input and loading state
@@ -226,7 +273,12 @@ async function sendMessage() {
     void debugMetadata;
 
     setLoading(false);
-    addMessage("agent", payload.response);
+    const assistantMessage = addMessage("agent", payload.response);
+    appendProductResults(
+      assistantMessage,
+      payload.products,
+      payload.remaining_budget,
+    );
   } catch (error) {
     console.error("AgentRec request failed:", error);
     setLoading(false);
