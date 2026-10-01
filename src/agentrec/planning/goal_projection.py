@@ -19,6 +19,7 @@ from pydantic import (
 )
 
 from ..domain import ShoppingRequirement
+from .constraint_grounding import DeterministicConstraintGrounder
 from .goal_contracts import (
     AllocationPreferenceType,
     ShoppingGoalExtractionDecision,
@@ -77,6 +78,14 @@ class GoalRequirementProjection(BaseModel):
 class GoalToRequirementProjector:
     """Project one complete goal decision without side effects or randomness."""
 
+    def __init__(
+        self,
+        constraint_grounder: DeterministicConstraintGrounder | None = None,
+    ) -> None:
+        self._constraint_grounder = (
+            constraint_grounder or DeterministicConstraintGrounder()
+        )
+
     def project(
         self,
         decision: ShoppingGoalExtractionDecision,
@@ -89,13 +98,19 @@ class GoalToRequirementProjector:
         if decision.total_budget is None or not decision.requirement_proposals:
             raise ValueError("Goal decision is incomplete and cannot be projected.")
 
+        grounded_features = tuple(
+            self._constraint_grounder.ground_required_features(
+                proposal.required_features
+            )
+            for proposal in decision.requirement_proposals
+        )
         requirements = tuple(
             ShoppingRequirement(
                 requirement_id=f"req-{index + 1:03d}",
                 category=proposal.category,
                 quantity=proposal.quantity,
                 max_budget=proposal.max_budget,
-                required_features=proposal.required_features,
+                required_features=grounded_features[index],
                 soft_preferences=proposal.soft_preferences,
                 priority=proposal.priority,
             )

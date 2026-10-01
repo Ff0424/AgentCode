@@ -15,6 +15,12 @@ from .contracts import (
     SelectRequirementDecision,
     validate_planner_decision,
 )
+from .constraint_grounding import (
+    ConstraintGroundingResult,
+    ConstraintGroundingStatus,
+    DeterministicConstraintGrounder,
+    UnresolvedConstraintGroundingError,
+)
 from .goal_contracts import (
     AllocationPreferenceType,
     GoalAllocationPreference,
@@ -46,7 +52,10 @@ from .requirement_extraction import (
 
 __all__ = [
     "AllocationPreferenceType",
+    "ConstraintGroundingResult",
+    "ConstraintGroundingStatus",
     "DeterministicBudgetAllocator",
+    "DeterministicConstraintGrounder",
     "FakePlanner",
     "FakeGoalExtractor",
     "FakeRequirementExtractor",
@@ -77,6 +86,7 @@ __all__ = [
     "StructuredGoalExtractor",
     "StructuredRequirementExtractor",
     "ShoppingGoalExtractionDecision",
+    "UnresolvedConstraintGroundingError",
     "OpenAICompatiblePlannerProvider",
     "validate_planner_decision",
 ]

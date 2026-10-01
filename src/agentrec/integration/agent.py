@@ -27,6 +27,7 @@ from ..planning import (
     GoalToRequirementProjector,
     RequirementExtractionDecision,
     ShoppingGoalExtractionDecision,
+    UnresolvedConstraintGroundingError,
 )
 from ..response import (
     DeterministicFinalResponseRenderer,
@@ -226,7 +227,30 @@ class AgentTaskRunner:
                 clarification_question=decision.clarification_question,
             )
 
-        original_projection = self._goal_projector.project(decision)
+        try:
+            original_projection = self._goal_projector.project(decision)
+        except UnresolvedConstraintGroundingError as exc:
+            unresolved = tuple(
+                value.original_constraint
+                for value in exc.results
+                if value.canonical_constraint is None
+            )
+            question = (
+                "Please clarify these required product features using standard "
+                "capability names: " + ", ".join(unresolved) + "."
+            )
+            clarification = ShoppingGoalExtractionDecision(
+                total_budget=decision.total_budget,
+                requirement_proposals=decision.requirement_proposals,
+                allocation_preferences=decision.allocation_preferences,
+                clarification_needed=True,
+                clarification_question=question,
+            )
+            return GoalExecutionResult(
+                status=GoalExecutionStatus.CLARIFICATION_REQUIRED,
+                goal_decision=clarification,
+                clarification_question=question,
+            )
         final_projection = original_projection
         memory_error: str | None = None
 
