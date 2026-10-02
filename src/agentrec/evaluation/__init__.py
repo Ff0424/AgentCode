@@ -63,6 +63,7 @@ from .dataset import (
     load_cases,
     load_manifest,
 )
+from .runner import CuratedBenchmarkRunner
 
 __all__ = [
     "EVALUATION_TRACKS",
@@ -119,4 +120,5 @@ __all__ = [
     "EvaluationManifestError",
     "load_cases",
     "load_manifest",
+    "CuratedBenchmarkRunner",
 ]
