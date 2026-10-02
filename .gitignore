@@ -69,3 +69,6 @@ Thumbs.db
 
 # Early local EDA notebook
 notebooks/01_explore_amazon.ipynb
+
+outputs/
+output/

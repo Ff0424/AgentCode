@@ -2,7 +2,7 @@
   "benchmark_name": "AgentRec Curated Benchmark V1 Pilot",
   "benchmark_version": "0.1.0-pilot",
   "schema_version": "1.0",
-  "status": "partial_annotation_approval",
+  "status": "partial_artifact_approval",
   "case_count": 20,
   "split": "development",
   "track_counts": {
@@ -11,15 +11,27 @@
     "track_c": 6
   },
   "annotation_counts": {
-    "approved": 14,
-    "pending": 6,
+    "approved": 17,
+    "pending": 3,
     "disputed": 0
   },
   "track_annotation_status": {
     "track_a": "approved",
     "track_b": "approved",
-    "track_c": "pending_artifact_review"
+    "track_c": "partial_artifact_approval"
   },
   "created_for": "annotation and schema validation before scorer and runner implementation",
-  "blind_test": false
+  "blind_test": false,
+  "artifact_adjudication": {
+    "approved_cases": [
+      "e2e_ready_001",
+      "e2e_zero_candidate_001",
+      "e2e_fallback_001"
+    ],
+    "pending_cases": [
+      "e2e_unknown_replan_001",
+      "e2e_contradicted_001",
+      "e2e_replan_recover_001"
+    ]
+  }
 }
