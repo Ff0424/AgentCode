@@ -67,6 +67,19 @@ APPROVED_CASE_IDS = {
 
 PENDING_TRACK_C_IDS = EXPECTED_CASE_IDS - APPROVED_CASE_IDS
 
+ARTIFACT_APPROVED_TRACK_C_IDS = {
+    "e2e_ready_001",
+    "e2e_zero_candidate_001",
+    "e2e_fallback_001",
+}
+
+
+ARTIFACT_PENDING_TRACK_C_IDS = {
+    "e2e_unknown_replan_001",
+    "e2e_contradicted_001",
+    "e2e_replan_recover_001",
+}
+
 
 def _load_raw_lines() -> tuple[str, ...]:
     return tuple(
@@ -95,7 +108,7 @@ class CuratedBenchmarkV1PilotTests(unittest.TestCase):
         )
         self.assertEqual(
             manifest["annotation_counts"],
-            {"approved": 14, "pending": 6, "disputed": 0},
+            {"approved": 17, "pending": 3, "disputed": 0},
         )
         self.assertFalse(manifest["blind_test"])
 
@@ -138,6 +151,39 @@ class CuratedBenchmarkV1PilotTests(unittest.TestCase):
                 self.assertEqual(case.independent_product_truth, ())
                 self.assertEqual(case.evidence_annotations, ())
 
+    def test_track_c_artifact_adjudication_matrix(self) -> None:
+        manifest = json.loads(
+            MANIFEST_PATH.read_text(encoding="utf-8")
+        )
+
+        self.assertEqual(
+            manifest["artifact_adjudication"]["approved_cases"],
+            [
+                "e2e_ready_001",
+                "e2e_zero_candidate_001",
+                "e2e_fallback_001",
+            ],
+        )
+
+        self.assertEqual(
+            manifest["artifact_adjudication"]["pending_cases"],
+            [
+                "e2e_unknown_replan_001",
+                "e2e_contradicted_001",
+                "e2e_replan_recover_001",
+            ],
+        )
+
+        self.assertEqual(
+            len(manifest["artifact_adjudication"]["approved_cases"]),
+            3,
+        )
+
+        self.assertEqual(
+            len(manifest["artifact_adjudication"]["pending_cases"]),
+            3,
+        )
+        
     def test_track_counts_match_approved_matrix(self) -> None:
         counts = {"track_a": 0, "track_b": 0, "track_c": 0}
         for case in _load_cases():

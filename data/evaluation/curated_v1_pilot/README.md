@@ -29,8 +29,8 @@ no Base-versus-LoRA conclusion.
 
 Every case is in the `development` split. The nine Track A and five Track B
 cases passed the Stage 5.3.3a manual semantic/reference review and are
-`approved`. The six Track C cases remain `pending` artifact adjudication.
-
+`approved`. Track C artifact adjudication is partially completed:
+three cases have passed artifact inspection and three cases remain pending independent artifact review.
 ## Loading
 
 Read `cases.jsonl` one UTF-8 line at a time and validate every object with
