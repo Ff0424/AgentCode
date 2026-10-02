@@ -1,5 +1,15 @@
 """Lightweight public contracts for AgentRec evaluation datasets and results."""
 
+from .adapters import (
+    EVALUATION_TRACKS,
+    TRACK_A,
+    TRACK_B,
+    TRACK_C,
+    EvaluationAdapter,
+    EvaluationAdapterRouter,
+    resolve_track,
+)
+
 from .contracts import (
     AdjudicationStatus,
     AllocationPreference,
@@ -46,8 +56,22 @@ from .inspection import (
     TrackCArtifactInspector,
     select_track_c_cases,
 )
+from .dataset import (
+    EvaluationCaseLoadError,
+    EvaluationDatasetError,
+    EvaluationManifestError,
+    load_cases,
+    load_manifest,
+)
 
 __all__ = [
+    "EVALUATION_TRACKS",
+    "TRACK_A",
+    "TRACK_B",
+    "TRACK_C",
+    "EvaluationAdapter",
+    "EvaluationAdapterRouter",
+    "resolve_track",
     "AdjudicationStatus",
     "AllocationPreference",
     "AnnotationMetadata",
@@ -90,4 +114,9 @@ __all__ = [
     "TrackCArtifactInspectionReport",
     "TrackCArtifactInspector",
     "select_track_c_cases",
+    "EvaluationCaseLoadError",
+    "EvaluationDatasetError",
+    "EvaluationManifestError",
+    "load_cases",
+    "load_manifest",
 ]

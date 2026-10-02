@@ -17,6 +17,8 @@ from agentrec.evaluation import (
     ExpectedGroundingStatus,
     ExpectedTerminalStatus,
     ReplanExpectation,
+    load_cases,
+    load_manifest,
 )
 
 
@@ -67,19 +69,6 @@ APPROVED_CASE_IDS = {
 
 PENDING_TRACK_C_IDS = EXPECTED_CASE_IDS - APPROVED_CASE_IDS
 
-ARTIFACT_APPROVED_TRACK_C_IDS = {
-    "e2e_ready_001",
-    "e2e_zero_candidate_001",
-    "e2e_fallback_001",
-}
-
-
-ARTIFACT_PENDING_TRACK_C_IDS = {
-    "e2e_unknown_replan_001",
-    "e2e_contradicted_001",
-    "e2e_replan_recover_001",
-}
-
 
 def _load_raw_lines() -> tuple[str, ...]:
     return tuple(
@@ -90,7 +79,7 @@ def _load_raw_lines() -> tuple[str, ...]:
 
 
 def _load_cases() -> tuple[EvaluationCase, ...]:
-    return tuple(EvaluationCase.model_validate_json(line) for line in _load_raw_lines())
+    return load_cases(CASES_PATH)
 
 
 class CuratedBenchmarkV1PilotTests(unittest.TestCase):
@@ -108,7 +97,7 @@ class CuratedBenchmarkV1PilotTests(unittest.TestCase):
         )
         self.assertEqual(
             manifest["annotation_counts"],
-            {"approved": 17, "pending": 3, "disputed": 0},
+            {"approved": 14, "pending": 6, "disputed": 0},
         )
         self.assertFalse(manifest["blind_test"])
 
@@ -151,39 +140,36 @@ class CuratedBenchmarkV1PilotTests(unittest.TestCase):
                 self.assertEqual(case.independent_product_truth, ())
                 self.assertEqual(case.evidence_annotations, ())
 
-    def test_track_c_artifact_adjudication_matrix(self) -> None:
-        manifest = json.loads(
-            MANIFEST_PATH.read_text(encoding="utf-8")
+    def test_track_c_artifact_adjudication_gate_remains_closed(self) -> None:
+        """Pending artifact cases cannot silently enter formal benchmark scoring."""
+
+        manifest = load_manifest(MANIFEST_PATH)
+        cases = _load_cases()
+        track_c = tuple(case for case in cases if "track_c" in case.tags)
+        approved = tuple(
+            case
+            for case in cases
+            if case.annotation_metadata.adjudication_status
+            is AdjudicationStatus.APPROVED
         )
 
         self.assertEqual(
-            manifest["artifact_adjudication"]["approved_cases"],
-            [
-                "e2e_ready_001",
-                "e2e_zero_candidate_001",
-                "e2e_fallback_001",
-            ],
+            manifest["track_annotation_status"]["track_c"],
+            "pending_artifact_review",
         )
+        self.assertEqual(manifest["annotation_counts"]["approved"], len(approved))
+        self.assertEqual(len(track_c), 6)
+        self.assertFalse(any(case in approved for case in track_c))
+        for case in track_c:
+            with self.subTest(case_id=case.case_id):
+                self.assertIn("artifact_review_required", case.tags)
+                self.assertIs(
+                    case.annotation_metadata.adjudication_status,
+                    AdjudicationStatus.PENDING,
+                )
+                self.assertEqual(case.independent_product_truth, ())
+                self.assertEqual(case.evidence_annotations, ())
 
-        self.assertEqual(
-            manifest["artifact_adjudication"]["pending_cases"],
-            [
-                "e2e_unknown_replan_001",
-                "e2e_contradicted_001",
-                "e2e_replan_recover_001",
-            ],
-        )
-
-        self.assertEqual(
-            len(manifest["artifact_adjudication"]["approved_cases"]),
-            3,
-        )
-
-        self.assertEqual(
-            len(manifest["artifact_adjudication"]["pending_cases"]),
-            3,
-        )
-        
     def test_track_counts_match_approved_matrix(self) -> None:
         counts = {"track_a": 0, "track_b": 0, "track_c": 0}
         for case in _load_cases():
